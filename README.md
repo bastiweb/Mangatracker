@@ -1,14 +1,34 @@
 # Manga Tracker
 
-Eine einfache Web-App, um vorhandene Manga-Serien zu tracken. Die Daten werden in einer SQLite-Datenbank gespeichert.
+Web-App zum Verwalten deiner Manga-Serien mit SQLite-Datenbank, Hardcover-Anbindung, Such-/Sortierübersicht und Docker-Setup.
+
+## Seiten
+
+- `/` Erfassung/Bearbeitung einer Serie
+- `/mangas` Übersicht mit Suche, Sortierung, Quick-Add und fehlenden Bänden
+- `/settings` Einstellungen für Hardcover API Token
 
 ## Funktionen
 
-- Manga-Einträge anlegen
-- Einträge bearbeiten
-- Einträge löschen
-- Status setzen (`Geplant`, `Sammle`, `Pausiert`, `Abgeschlossen`)
-- Speicherung in SQLite (`data/manga.db` lokal oder `/data/manga.db` im Docker-Container)
+- Serien anlegen, bearbeiten und löschen
+- Suchfunktion in der Übersicht (Titel, Autor, Notizen, Status)
+- Sortierfunktion (zuletzt geändert, Titel, vorhandene Bände)
+- Quick-Add von Bänden (`+1`, `+5`)
+- Fehlende Bände explizit markieren (pro Band auswählbar)
+- Hardcover-Suche mit Auswahl von Autor + Cover
+- Persistente Speicherung des Hardcover API Tokens in der Datenbank
+- Darkmode mit manuellem Umschalter
+
+## Hardcover API
+
+Die App nutzt serverseitig folgende Vorgaben:
+
+- Endpoint: `https://api.hardcover.app/v1/graphql`
+- Header:
+  - `content-type: application/json`
+  - `authorization: <API Token aus Settings>`
+
+Die Suche läuft über den Manga-/Buchtitel und liefert bis zu 5 Treffer zur Auswahl.
 
 ## Voraussetzungen (lokal)
 
@@ -34,7 +54,7 @@ Dann läuft die App unter [http://localhost:3000](http://localhost:3000).
 
 ### Datenpersistenz
 
-In `docker-compose.yml` ist ein Volume (`manga_data`) eingerichtet. Dadurch bleiben deine Daten auch nach einem Container-Neustart erhalten.
+In `docker-compose.yml` ist ein Volume (`manga_data`) eingerichtet. Dadurch bleiben Daten und Settings (inkl. Token) nach Neustarts erhalten.
 
 ## Docker Image veröffentlichen (Docker Hub)
 
@@ -48,7 +68,7 @@ docker push DEIN_USER/manga-tracker:1.0.0
 docker push DEIN_USER/manga-tracker:latest
 ```
 
-Danach kann das Image so gestartet werden:
+Start vom veröffentlichten Image:
 
 ```bash
 docker run -d -p 3000:3000 -e DB_FILE=/data/manga.db -v manga_data:/data DEIN_USER/manga-tracker:latest
@@ -56,8 +76,14 @@ docker run -d -p 3000:3000 -e DB_FILE=/data/manga.db -v manga_data:/data DEIN_US
 
 ## API-Endpunkte
 
-- `GET /api/manga` - Alle Einträge abrufen
-- `POST /api/manga` - Eintrag erstellen
-- `PUT /api/manga/:id` - Eintrag aktualisieren
-- `DELETE /api/manga/:id` - Eintrag löschen
-- `GET /api/health` - Healthcheck
+- `GET /api/health`
+- `GET /api/manga`
+- `GET /api/manga/:id`
+- `POST /api/manga`
+- `PUT /api/manga/:id`
+- `PATCH /api/manga/:id/volumes`
+- `PATCH /api/manga/:id/missing-volumes`
+- `DELETE /api/manga/:id`
+- `GET /api/settings/hardcover-token`
+- `PUT /api/settings/hardcover-token`
+- `GET /api/hardcover/search?query=<suchbegriff>`

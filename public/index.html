@@ -3,18 +3,27 @@
   <head>
     <meta charset="UTF-8" />
     <meta name="viewport" content="width=device-width, initial-scale=1.0" />
-    <title>Manga Tracker</title>
+    <title>Manga Tracker - Erfassung</title>
     <link rel="stylesheet" href="/styles.css" />
+    <script src="/theme.js" defer></script>
+    <script src="/create.js" defer></script>
   </head>
   <body>
-    <main class="container">
-      <section class="hero">
-        <h1>Manga Tracker</h1>
-        <p>Verwalte deine Manga-Sammlung zentral in einer Datenbank.</p>
-      </section>
+    <header class="topbar">
+      <div class="container topbar-inner">
+        <a class="brand" href="/">Manga Tracker</a>
+        <nav class="nav-links">
+          <a class="active" href="/">Erfassen</a>
+          <a href="/mangas">Übersicht</a>
+          <a href="/settings">Settings</a>
+        </nav>
+        <button id="theme-toggle" class="secondary" type="button" aria-pressed="false">Darkmode</button>
+      </div>
+    </header>
 
+    <main class="container page-grid">
       <section class="panel">
-        <h2 id="form-title">Neuen Manga hinzufügen</h2>
+        <h1 id="form-title">Neue Manga-Serie anlegen</h1>
         <form id="manga-form">
           <input type="hidden" id="manga-id" />
 
@@ -41,40 +50,43 @@
           </select>
 
           <label for="notes">Notizen</label>
-          <textarea id="notes" name="notes" rows="3" maxlength="600"></textarea>
+          <textarea id="notes" name="notes" rows="4" maxlength="600"></textarea>
+
+          <section class="embedded-section">
+            <div class="embedded-header">
+              <h2>Hardcover-Verknüpfung</h2>
+              <small>Suche nach Titel/Autor und wähle den passenden Treffer.</small>
+            </div>
+
+            <div class="search-row">
+              <input id="hardcover-query" placeholder="z. B. One Piece" />
+              <button id="hardcover-search-btn" type="button">Hardcover suchen</button>
+            </div>
+
+            <div id="hardcover-results" class="hardcover-results"></div>
+
+            <div id="selected-hardcover" class="selected-hardcover empty">
+              Noch keine Hardcover-Verknüpfung ausgewählt.
+            </div>
+
+            <div class="actions">
+              <button id="clear-hardcover-btn" class="secondary" type="button">Verknüpfung entfernen</button>
+            </div>
+          </section>
 
           <div class="actions">
-            <button type="submit" id="save-btn">Speichern</button>
-            <button type="button" id="cancel-btn" class="secondary" hidden>Abbrechen</button>
+            <button id="save-btn" type="submit">Speichern</button>
+            <button id="cancel-edit-btn" class="secondary" type="button" hidden>Bearbeitung abbrechen</button>
           </div>
         </form>
         <p id="message" class="message" aria-live="polite"></p>
       </section>
 
       <section class="panel">
-        <div class="list-header">
-          <h2>Deine Mangas</h2>
-          <span id="count">0 Einträge</span>
-        </div>
-        <div id="list" class="list"></div>
+        <h2>Schnellzugriff</h2>
+        <p class="muted">Zur Übersicht mit Suche, Sortierung und fehlenden Bänden:</p>
+        <a class="button-link" href="/mangas">Zur Manga-Übersicht</a>
       </section>
     </main>
-
-    <template id="item-template">
-      <article class="item">
-        <header>
-          <h3 class="item-title"></h3>
-          <span class="badge"></span>
-        </header>
-        <p class="volumes"></p>
-        <p class="notes"></p>
-        <footer>
-          <button data-action="edit" class="secondary">Bearbeiten</button>
-          <button data-action="delete" class="danger">Löschen</button>
-        </footer>
-      </article>
-    </template>
-
-    <script src="/app.js" defer></script>
   </body>
 </html>

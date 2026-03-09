@@ -1,0 +1,47 @@
+<!DOCTYPE html>
+<html lang="de">
+  <head>
+    <meta charset="UTF-8" />
+    <meta name="viewport" content="width=device-width, initial-scale=1.0" />
+    <title>Manga Tracker - Settings</title>
+    <link rel="stylesheet" href="/styles.css" />
+    <script src="/theme.js" defer></script>
+    <script src="/settings.js" defer></script>
+  </head>
+  <body>
+    <header class="topbar">
+      <div class="container topbar-inner">
+        <a class="brand" href="/">Manga Tracker</a>
+        <nav class="nav-links">
+          <a href="/">Erfassen</a>
+          <a href="/mangas">Übersicht</a>
+          <a class="active" href="/settings">Settings</a>
+        </nav>
+        <button id="theme-toggle" class="secondary" type="button" aria-pressed="false">Darkmode</button>
+      </div>
+    </header>
+
+    <main class="container page-grid">
+      <section class="panel">
+        <h1>Settings</h1>
+        <p class="muted">
+          Hinterlege hier deinen Hardcover API Token. Er wird serverseitig in der Datenbank gespeichert und für
+          Hardcover-Suchen verwendet.
+        </p>
+
+        <form id="token-form">
+          <label for="token">Hardcover API Token</label>
+          <input id="token" type="password" placeholder="Token einfügen" autocomplete="off" />
+
+          <div class="actions">
+            <button type="submit">Token speichern</button>
+            <button id="clear-token-btn" class="secondary" type="button">Token entfernen</button>
+          </div>
+        </form>
+
+        <p id="token-status" class="muted"></p>
+        <p id="message" class="message" aria-live="polite"></p>
+      </section>
+    </main>
+  </body>
+</html>

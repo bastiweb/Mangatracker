@@ -1,0 +1,96 @@
+<!DOCTYPE html>
+<html lang="de">
+  <head>
+    <meta charset="UTF-8" />
+    <meta name="viewport" content="width=device-width, initial-scale=1.0" />
+    <title>Manga Tracker - Übersicht</title>
+    <link rel="stylesheet" href="/styles.css" />
+    <script src="/theme.js" defer></script>
+    <script src="/mangas.js" defer></script>
+  </head>
+  <body>
+    <header class="topbar">
+      <div class="container topbar-inner">
+        <a class="brand" href="/">Manga Tracker</a>
+        <nav class="nav-links">
+          <a href="/">Erfassen</a>
+          <a class="active" href="/mangas">Übersicht</a>
+          <a href="/settings">Settings</a>
+        </nav>
+        <button id="theme-toggle" class="secondary" type="button" aria-pressed="false">Darkmode</button>
+      </div>
+    </header>
+
+    <main class="container page-grid">
+      <section class="panel">
+        <h1>Manga-Übersicht</h1>
+
+        <div class="controls">
+          <div>
+            <label for="search">Suche</label>
+            <input id="search" placeholder="Titel, Autor oder Notiz" />
+          </div>
+          <div>
+            <label for="sort">Sortieren</label>
+            <select id="sort">
+              <option value="updated_desc">Zuletzt geändert (neu zuerst)</option>
+              <option value="title_asc">Titel A-Z</option>
+              <option value="title_desc">Titel Z-A</option>
+              <option value="owned_desc">Meiste vorhandene Bände</option>
+              <option value="owned_asc">Wenigste vorhandene Bände</option>
+            </select>
+          </div>
+        </div>
+
+        <div class="list-header">
+          <h2>Deine Serien</h2>
+          <span id="count">0 Einträge</span>
+        </div>
+
+        <div class="table-wrap">
+          <table class="manga-table">
+            <thead>
+              <tr>
+                <th>Cover</th>
+                <th>Serie</th>
+                <th>Autor</th>
+                <th>Bände</th>
+                <th>Fehlend</th>
+                <th>Aktionen</th>
+              </tr>
+            </thead>
+            <tbody id="table-body"></tbody>
+          </table>
+        </div>
+
+        <p id="empty-state" class="muted" hidden>Keine Serien gefunden.</p>
+        <p id="message" class="message" aria-live="polite"></p>
+      </section>
+    </main>
+
+    <template id="manga-row-template">
+      <tr>
+        <td><img class="cover cover-small" alt="Cover" /></td>
+        <td>
+          <div class="cell-series">
+            <strong class="item-title"></strong>
+            <span class="badge"></span>
+            <p class="cell-note muted"></p>
+          </div>
+        </td>
+        <td class="author-line"></td>
+        <td class="volumes"></td>
+        <td class="missing-line"></td>
+        <td>
+          <div class="quick-actions">
+            <button data-action="add-1" class="quick">+1</button>
+            <button data-action="add-5" class="quick">+5</button>
+            <a data-action="edit" class="button-link secondary" href="#">Bearbeiten</a>
+            <button data-action="delete" class="danger">Löschen</button>
+          </div>
+          <div data-editor></div>
+        </td>
+      </tr>
+    </template>
+  </body>
+</html>
