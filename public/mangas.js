@@ -140,8 +140,13 @@ function createMissingEditor(manga) {
   const container = document.createElement("div");
   container.className = "missing-editor";
 
-  if (!manga.total_volumes || manga.total_volumes <= 0) {
+  if (manga.total_volumes === null) {
     container.innerHTML = "<p class=\"muted\">Gesamtzahl fehlt.</p>";
+    return container;
+  }
+
+  if (manga.total_volumes <= 0 || manga.owned_volumes >= manga.total_volumes) {
+    container.innerHTML = "<p class=\"muted\">Serie vollständig. Keine fehlenden Bände auswählbar.</p>";
     return container;
   }
 
@@ -230,8 +235,9 @@ function render() {
     note.textContent = manga.notes || "";
     authorLine.textContent = manga.author_name || "-";
     volumes.textContent = `${manga.owned_volumes}${manga.total_volumes !== null ? ` / ${manga.total_volumes}` : ""}`;
+    const isCompleteSeries = manga.total_volumes !== null && manga.owned_volumes >= manga.total_volumes;
     missingLine.textContent =
-      Array.isArray(manga.missing_volumes) && manga.missing_volumes.length > 0
+      Array.isArray(manga.missing_volumes) && manga.missing_volumes.length > 0 && !isCompleteSeries
         ? manga.missing_volumes.join(", ")
         : "-";
 

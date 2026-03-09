@@ -130,6 +130,10 @@ function validatePayload(payload) {
 
   const missingVolumes = normalizeMissingVolumes(payload.missingVolumes || [], totalVolumes);
 
+  if (totalVolumes !== null && ownedVolumes >= totalVolumes && missingVolumes.length > 0) {
+    return { error: "Serie ist vollständig. Fehlende Bände können nicht gesetzt werden." };
+  }
+
   return {
     value: {
       title,
@@ -704,16 +708,28 @@ app.patch("/api/manga/:id/volumes", async (req, res) => {
       });
     }
 
+    const reachedMaxVolumes =
+      manga.total_volumes !== null && updatedOwnedVolumes === manga.total_volumes;
+
     let nextStatus = manga.status;
-    if (manga.total_volumes !== null && updatedOwnedVolumes === manga.total_volumes) {
+    if (reachedMaxVolumes) {
       nextStatus = "Abgeschlossen";
     }
 
-    await db.run("UPDATE mangas SET owned_volumes = ?, status = ? WHERE id = ?", [
-      updatedOwnedVolumes,
-      nextStatus,
-      id
-    ]);
+    if (reachedMaxVolumes) {
+      await db.run("UPDATE mangas SET owned_volumes = ?, status = ?, missing_volumes = ? WHERE id = ?", [
+        updatedOwnedVolumes,
+        nextStatus,
+        JSON.stringify([]),
+        id
+      ]);
+    } else {
+      await db.run("UPDATE mangas SET owned_volumes = ?, status = ? WHERE id = ?", [
+        updatedOwnedVolumes,
+        nextStatus,
+        id
+      ]);
+    }
 
     const updated = await db.get("SELECT * FROM mangas WHERE id = ?", [id]);
     return res.json(normalizeMangaRow(updated));
@@ -731,13 +747,23 @@ app.patch("/api/manga/:id/missing-volumes", async (req, res) => {
 
   try {
     const db = await initDb();
-    const manga = await db.get("SELECT id, total_volumes FROM mangas WHERE id = ?", [id]);
+    const manga = await db.get("SELECT id, owned_volumes, total_volumes FROM mangas WHERE id = ?", [id]);
 
     if (!manga) {
       return res.status(404).json({ error: "Manga nicht gefunden." });
     }
 
     const missingVolumes = normalizeMissingVolumes(req.body?.missingVolumes || [], manga.total_volumes);
+
+    if (
+      manga.total_volumes !== null &&
+      manga.owned_volumes >= manga.total_volumes &&
+      missingVolumes.length > 0
+    ) {
+      return res
+        .status(400)
+        .json({ error: "Serie ist vollständig. Fehlende Bände können nicht gesetzt werden." });
+    }
 
     await db.run("UPDATE mangas SET missing_volumes = ? WHERE id = ?", [
       JSON.stringify(missingVolumes),
@@ -805,26 +831,3 @@ start().catch((error) => {
   console.error("Serverstart fehlgeschlagen:", error);
   process.exit(1);
 });
-
-
-
-
-
-
-
-
-
-
-
-
-
-
-
-
-
-
-
-
-
-
-
