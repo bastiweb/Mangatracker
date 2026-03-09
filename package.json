@@ -1,0 +1,23 @@
+{
+  "name": "manga-tracker",
+  "version": "1.0.0",
+  "description": "Web-App zum Tracken der eigenen Manga-Sammlung",
+  "main": "src/server.js",
+  "scripts": {
+    "start": "node src/server.js",
+    "dev": "node --watch src/server.js"
+  },
+  "keywords": [
+    "manga",
+    "tracker",
+    "sqlite",
+    "docker"
+  ],
+  "author": "",
+  "license": "MIT",
+  "dependencies": {
+    "express": "^4.21.2",
+    "sqlite": "^5.1.1",
+    "sqlite3": "^5.1.7"
+  }
+}

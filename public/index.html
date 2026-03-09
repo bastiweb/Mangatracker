@@ -1,0 +1,80 @@
+<!DOCTYPE html>
+<html lang="de">
+  <head>
+    <meta charset="UTF-8" />
+    <meta name="viewport" content="width=device-width, initial-scale=1.0" />
+    <title>Manga Tracker</title>
+    <link rel="stylesheet" href="/styles.css" />
+  </head>
+  <body>
+    <main class="container">
+      <section class="hero">
+        <h1>Manga Tracker</h1>
+        <p>Verwalte deine Manga-Sammlung zentral in einer Datenbank.</p>
+      </section>
+
+      <section class="panel">
+        <h2 id="form-title">Neuen Manga hinzufügen</h2>
+        <form id="manga-form">
+          <input type="hidden" id="manga-id" />
+
+          <label for="title">Titel</label>
+          <input id="title" name="title" required maxlength="120" />
+
+          <div class="grid-2">
+            <div>
+              <label for="ownedVolumes">Vorhandene Bände</label>
+              <input id="ownedVolumes" name="ownedVolumes" type="number" min="0" required value="0" />
+            </div>
+            <div>
+              <label for="totalVolumes">Gesamtzahl Bände (optional)</label>
+              <input id="totalVolumes" name="totalVolumes" type="number" min="0" />
+            </div>
+          </div>
+
+          <label for="status">Status</label>
+          <select id="status" name="status">
+            <option value="Geplant">Geplant</option>
+            <option value="Sammle" selected>Sammle</option>
+            <option value="Pausiert">Pausiert</option>
+            <option value="Abgeschlossen">Abgeschlossen</option>
+          </select>
+
+          <label for="notes">Notizen</label>
+          <textarea id="notes" name="notes" rows="3" maxlength="600"></textarea>
+
+          <div class="actions">
+            <button type="submit" id="save-btn">Speichern</button>
+            <button type="button" id="cancel-btn" class="secondary" hidden>Abbrechen</button>
+          </div>
+        </form>
+        <p id="message" class="message" aria-live="polite"></p>
+      </section>
+
+      <section class="panel">
+        <div class="list-header">
+          <h2>Deine Mangas</h2>
+          <span id="count">0 Einträge</span>
+        </div>
+        <div id="list" class="list"></div>
+      </section>
+    </main>
+
+    <template id="item-template">
+      <article class="item">
+        <header>
+          <h3 class="item-title"></h3>
+          <span class="badge"></span>
+        </header>
+        <p class="volumes"></p>
+        <p class="notes"></p>
+        <footer>
+          <button data-action="edit" class="secondary">Bearbeiten</button>
+          <button data-action="delete" class="danger">Löschen</button>
+        </footer>
+      </article>
+    </template>
+
+    <script src="/app.js" defer></script>
+  </body>
+</html>
