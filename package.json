@@ -1,6 +1,6 @@
 {
   "name": "manga-tracker",
-  "version": "1.0.0",
+  "version": "1.0.1",
   "description": "Web-App zum Tracken der eigenen Manga-Sammlung",
   "main": "src/server.js",
   "scripts": {
@@ -16,8 +16,16 @@
   "author": "",
   "license": "MIT",
   "dependencies": {
-    "express": "^4.21.2",
-    "sqlite": "^5.1.1",
-    "sqlite3": "^5.1.7"
+    "express": "^5.2.1",
+    "better-sqlite3": "^12.2.0"
+  },
+  "overrides": {
+    "path-to-regexp": "8.3.0",
+    "qs": "6.15.0",
+    "tar": "7.5.11"
   }
 }
+
+
+
+

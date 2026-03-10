@@ -1,11 +1,37 @@
 const fs = require("fs");
 const path = require("path");
-const sqlite3 = require("sqlite3");
-const { open } = require("sqlite");
+const Database = require("better-sqlite3");
 
 const DB_FILE = process.env.DB_FILE || path.join(__dirname, "..", "data", "manga.db");
 
 let db;
+
+function createDb(filename) {
+  const raw = new Database(filename);
+
+  return {
+    exec(sql) {
+      raw.exec(sql);
+    },
+    run(sql, params) {
+      const stmt = raw.prepare(sql);
+      const info = params !== undefined ? stmt.run(params) : stmt.run();
+
+      return {
+        changes: info.changes,
+        lastID: info.lastInsertRowid ? Number(info.lastInsertRowid) : undefined
+      };
+    },
+    get(sql, params) {
+      const stmt = raw.prepare(sql);
+      return params !== undefined ? stmt.get(params) : stmt.get();
+    },
+    all(sql, params) {
+      const stmt = raw.prepare(sql);
+      return params !== undefined ? stmt.all(params) : stmt.all();
+    }
+  };
+}
 
 async function ensureColumn(table, name, definition) {
   const columns = await db.all(`PRAGMA table_info(${table})`);
@@ -23,10 +49,7 @@ async function initDb() {
 
   fs.mkdirSync(path.dirname(DB_FILE), { recursive: true });
 
-  db = await open({
-    filename: DB_FILE,
-    driver: sqlite3.Database
-  });
+  db = createDb(DB_FILE);
 
   await db.exec(`
     PRAGMA foreign_keys = ON;
@@ -80,12 +103,8 @@ async function initDb() {
   await db.run(
     "UPDATE mangas SET owned_volumes = 1, total_volumes = 1, missing_volumes = '[]' WHERE media_type = 'book'"
   );
-  await db.run(
-    "UPDATE mangas SET genres = '[]' WHERE genres IS NULL OR TRIM(genres) = ''"
-  );
-  await db.run(
-    "UPDATE mangas SET moods = '[]' WHERE moods IS NULL OR TRIM(moods) = ''"
-  );
+  await db.run("UPDATE mangas SET genres = '[]' WHERE genres IS NULL OR TRIM(genres) = ''");
+  await db.run("UPDATE mangas SET moods = '[]' WHERE moods IS NULL OR TRIM(moods) = ''");
   await db.run(
     "UPDATE mangas SET content_warnings = '[]' WHERE content_warnings IS NULL OR TRIM(content_warnings) = ''"
   );

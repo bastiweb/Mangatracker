@@ -1055,7 +1055,7 @@ app.get("/settings", (_req, res) => {
   res.sendFile(path.join(__dirname, "..", "public", "settings.html"));
 });
 
-app.get("*", (req, res) => {
+app.use((req, res) => {
   if (req.path.startsWith("/api/")) {
     return res.status(404).json({ error: "API-Route nicht gefunden." });
   }
@@ -1075,3 +1075,5 @@ start().catch((error) => {
   console.error("Serverstart fehlgeschlagen:", error);
   process.exit(1);
 });
+
+
