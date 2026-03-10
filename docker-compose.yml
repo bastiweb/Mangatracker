@@ -3,10 +3,10 @@ services:
     build: .
     container_name: manga-tracker
     ports:
-      - "3000:3000"
+      - "3003:3003"
     environment:
       - NODE_ENV=production
-      - PORT=3000
+      - PORT=3003
       - DB_FILE=/data/manga.db
     volumes:
       - manga_data:/data

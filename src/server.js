@@ -3,7 +3,7 @@ const path = require("path");
 const { initDb } = require("./db");
 
 const app = express();
-const PORT = process.env.PORT || 3000;
+const PORT = process.env.PORT || 3003;
 const ALLOWED_STATUS = ["Geplant", "Sammle", "Pausiert", "Abgeschlossen"];
 const ALLOWED_MEDIA_TYPES = ["manga", "book"];
 const HARDCOVER_TOKEN_KEY = "hardcover_api_token";

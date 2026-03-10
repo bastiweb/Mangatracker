@@ -43,7 +43,7 @@ npm install
 npm start
 ```
 
-Danach ist die App unter [http://localhost:3000](http://localhost:3000) erreichbar.
+Danach ist die App unter [http://localhost:3003](http://localhost:3003) erreichbar.
 
 ## Docker Build & Run
 
@@ -51,7 +51,7 @@ Danach ist die App unter [http://localhost:3000](http://localhost:3000) erreichb
 docker compose up --build -d
 ```
 
-Dann läuft die App unter [http://localhost:3000](http://localhost:3000).
+Dann läuft die App unter [http://localhost:3003](http://localhost:3003).
 
 ### Datenpersistenz
 
@@ -72,7 +72,7 @@ docker push DEIN_USER/manga-tracker:latest
 Start vom veröffentlichten Image:
 
 ```bash
-docker run -d -p 3000:3000 -e DB_FILE=/data/manga.db -v manga_data:/data DEIN_USER/manga-tracker:latest
+docker run -d -p 3003:3003 -e DB_FILE=/data/manga.db -v manga_data:/data DEIN_USER/manga-tracker:latest
 ```
 
 ## API-Endpunkte
