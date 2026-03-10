@@ -1,16 +1,17 @@
 # Manga Tracker
 
-Web-App zum Verwalten deiner Manga-Serien mit SQLite-Datenbank, Hardcover-Anbindung, Such-/Sortierübersicht und Docker-Setup.
+Web-App zum Verwalten deiner Manga-Serien und Bücher mit SQLite-Datenbank, Hardcover-Anbindung, Such-/Sortierübersicht und Docker-Setup.
 
 ## Seiten
 
-- `/` Erfassung/Bearbeitung einer Serie
-- `/mangas` Übersicht mit Suche, Sortierung, Quick-Add und fehlenden Bänden
+- `/` Übersicht mit Suche, Sortierung, Quick-Add und fehlenden Bänden
+- `/create` Erfassung/Bearbeitung von Manga-Serien und Büchern
 - `/settings` Einstellungen für Hardcover API Token
 
 ## Funktionen
 
-- Serien anlegen, bearbeiten und löschen
+- Manga-Serien und Bücher anlegen, bearbeiten und löschen
+- Medientyp wählen (Manga oder Buch)
 - Suchfunktion in der Übersicht (Titel, Autor, Notizen, Status)
 - Sortierfunktion (zuletzt geändert, Titel, vorhandene Bände)
 - Quick-Add von Bänden (`+1`, `+5`)

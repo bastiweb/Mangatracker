@@ -5,11 +5,12 @@ const { initDb } = require("./db");
 const app = express();
 const PORT = process.env.PORT || 3000;
 const ALLOWED_STATUS = ["Geplant", "Sammle", "Pausiert", "Abgeschlossen"];
+const ALLOWED_MEDIA_TYPES = ["manga", "book"];
 const HARDCOVER_TOKEN_KEY = "hardcover_api_token";
 const HARDCOVER_ENDPOINT = "https://api.hardcover.app/v1/graphql";
 
 app.use(express.json());
-app.use(express.static(path.join(__dirname, "..", "public")));
+app.use(express.static(path.join(__dirname, "..", "public"), { index: false }));
 
 function parsePositiveInt(value) {
   const parsed = Number(value);
@@ -25,6 +26,41 @@ function parseNonNegativeInt(value) {
     return null;
   }
   return parsed;
+}
+function parseOptionalInt(value) {
+  if (value === "" || value === null || value === undefined) {
+    return null;
+  }
+
+  return parseNonNegativeInt(value);
+}
+
+function parseOptionalFloat(value, maxValue = null) {
+  if (value === "" || value === null || value === undefined) {
+    return null;
+  }
+
+  const parsed = Number(value);
+  if (!Number.isFinite(parsed) || parsed < 0) {
+    return null;
+  }
+
+  if (maxValue !== null && parsed > maxValue) {
+    return null;
+  }
+
+  return Math.round(parsed * 100) / 100;
+}
+
+function sanitizeTextArray(value, maxItems = 12, maxLength = 60) {
+  if (!Array.isArray(value)) {
+    return [];
+  }
+
+  return value
+    .map((entry) => sanitizeText(String(entry || ""), maxLength))
+    .filter(Boolean)
+    .slice(0, maxItems);
 }
 
 function parseId(id) {
@@ -83,14 +119,43 @@ function parseMissingVolumesFromDb(value) {
     return [];
   }
 }
+function parseTextArrayFromDb(value, maxItems = 12) {
+  if (!value) {
+    return [];
+  }
+
+  try {
+    const parsed = JSON.parse(value);
+    if (!Array.isArray(parsed)) {
+      return [];
+    }
+
+    return parsed
+      .map((entry) => sanitizeText(String(entry || ""), 80))
+      .filter(Boolean)
+      .slice(0, maxItems);
+  } catch {
+    return [];
+  }
+}
 
 function normalizeMangaRow(row) {
+  const mediaType = row.media_type === "book" ? "book" : "manga";
+
   return {
     ...row,
+    media_type: mediaType,
     author_name: row.author_name || "",
     cover_url: row.cover_url || "",
     hardcover_book_id: row.hardcover_book_id || "",
-    missing_volumes: parseMissingVolumesFromDb(row.missing_volumes)
+    missing_volumes: mediaType === "book" ? [] : parseMissingVolumesFromDb(row.missing_volumes),
+    genres: parseTextArrayFromDb(row.genres),
+    moods: parseTextArrayFromDb(row.moods, 10),
+    content_warnings: parseTextArrayFromDb(row.content_warnings, 10),
+    rating: row.rating ?? null,
+    ratings_count: row.ratings_count ?? null,
+    pages: row.pages ?? null,
+    release_year: row.release_year ?? null
   };
 }
 
@@ -101,18 +166,46 @@ function validatePayload(payload) {
   const authorName = sanitizeText(payload.authorName || "", 200);
   const coverUrl = sanitizeText(payload.coverUrl || "", 600);
   const hardcoverBookId = sanitizeText(payload.hardcoverBookId || "", 80);
+  const genres = sanitizeTextArray(payload.genres, 14, 60);
+  const moods = sanitizeTextArray(payload.moods, 10, 40);
+  const contentWarnings = sanitizeTextArray(payload.contentWarnings, 10, 60);
+  const rating = parseOptionalFloat(payload.rating, 5);
+  const ratingsCount = parseOptionalInt(payload.ratingsCount);
+  const pages = parseOptionalInt(payload.pages);
+  const releaseYear = parseOptionalInt(payload.releaseYear);
 
-  const ownedVolumes = parseNonNegativeInt(payload.ownedVolumes);
-  if (ownedVolumes === null) {
-    return { error: "Owned Volumes muss eine positive ganze Zahl (inkl. 0) sein." };
+  const rawMediaType = sanitizeText(payload.mediaType || "manga", 20).toLowerCase();
+  if (!ALLOWED_MEDIA_TYPES.includes(rawMediaType)) {
+    return { error: "Ungültiger Typ. Bitte Manga oder Buch wählen." };
   }
 
-  let totalVolumes = null;
-  const totalRaw = payload.totalVolumes;
-  if (totalRaw !== "" && totalRaw !== null && totalRaw !== undefined) {
-    totalVolumes = parseNonNegativeInt(totalRaw);
-    if (totalVolumes === null) {
-      return { error: "Total Volumes muss eine positive ganze Zahl sein." };
+  let ownedVolumes = 1;
+  let totalVolumes = 1;
+  let missingVolumes = [];
+
+  if (rawMediaType === "manga") {
+    ownedVolumes = parseNonNegativeInt(payload.ownedVolumes);
+    if (ownedVolumes === null) {
+      return { error: "Owned Volumes muss eine positive ganze Zahl (inkl. 0) sein." };
+    }
+
+    totalVolumes = null;
+    const totalRaw = payload.totalVolumes;
+    if (totalRaw !== "" && totalRaw !== null && totalRaw !== undefined) {
+      totalVolumes = parseNonNegativeInt(totalRaw);
+      if (totalVolumes === null) {
+        return { error: "Total Volumes muss eine positive ganze Zahl sein." };
+      }
+    }
+
+    if (totalVolumes !== null && totalVolumes < ownedVolumes) {
+      return { error: "Total Volumes darf nicht kleiner als Owned Volumes sein." };
+    }
+
+    missingVolumes = normalizeMissingVolumes(payload.missingVolumes || [], totalVolumes);
+
+    if (totalVolumes !== null && ownedVolumes >= totalVolumes && missingVolumes.length > 0) {
+      return { error: "Serie ist vollständig. Fehlende Bände können nicht gesetzt werden." };
     }
   }
 
@@ -124,24 +217,22 @@ function validatePayload(payload) {
     return { error: "Ungültiger Status." };
   }
 
-  if (totalVolumes !== null && totalVolumes < ownedVolumes) {
-    return { error: "Total Volumes darf nicht kleiner als Owned Volumes sein." };
-  }
-
-  const missingVolumes = normalizeMissingVolumes(payload.missingVolumes || [], totalVolumes);
-
-  if (totalVolumes !== null && ownedVolumes >= totalVolumes && missingVolumes.length > 0) {
-    return { error: "Serie ist vollständig. Fehlende Bände können nicht gesetzt werden." };
-  }
-
   return {
     value: {
       title,
       status,
       notes,
+      mediaType: rawMediaType,
       authorName,
       coverUrl,
       hardcoverBookId,
+      genres,
+      moods,
+      contentWarnings,
+      rating,
+      ratingsCount,
+      pages,
+      releaseYear,
       ownedVolumes,
       totalVolumes,
       missingVolumes
@@ -183,6 +274,67 @@ function buildTokenPreview(token) {
   }
 
   return `${token.slice(0, 4)}...${token.slice(-4)}`;
+}
+function stripHtmlTags(value) {
+  return String(value || "").replace(/<[^>]*>/g, "");
+}
+
+function decodeHtmlEntities(value) {
+  return String(value || "")
+    .replaceAll("&amp;", "&")
+    .replaceAll("&quot;", "\"")
+    .replaceAll("&#39;", "'")
+    .replaceAll("&lt;", "<")
+    .replaceAll("&gt;", ">");
+}
+
+function normalizeSnippet(value) {
+  if (!value) {
+    return "";
+  }
+
+  const noTags = stripHtmlTags(value);
+  const decoded = decodeHtmlEntities(noTags);
+  return sanitizeText(decoded, 200);
+}
+
+function extractSeriesSnippet(item) {
+  if (!item || typeof item !== "object") {
+    return "";
+  }
+
+  const highlight = item.highlight;
+  if (highlight && highlight.series_names) {
+    const seriesNode = Array.isArray(highlight.series_names)
+      ? highlight.series_names[0]
+      : highlight.series_names;
+    const snippet =
+      typeof seriesNode === "string" ? seriesNode : typeof seriesNode?.snippet === "string" ? seriesNode.snippet : "";
+    return normalizeSnippet(snippet);
+  }
+
+  const highlights = Array.isArray(item.highlights) ? item.highlights : [];
+  const match = highlights.find((entry) => entry?.field === "series_names");
+  if (match) {
+    const snippet =
+      typeof match.snippet === "string"
+        ? match.snippet
+        : Array.isArray(match.snippets)
+          ? match.snippets[0]
+          : "";
+    return normalizeSnippet(snippet);
+  }
+
+  const directSeries = item?.document?.series_names || item?.series_names;
+  if (typeof directSeries === "string") {
+    return sanitizeText(directSeries, 200);
+  }
+
+  if (Array.isArray(directSeries) && directSeries.length > 0) {
+    return sanitizeText(directSeries[0], 200);
+  }
+
+  return "";
 }
 
 function parseHardcoverResult(raw, index) {
@@ -256,11 +408,45 @@ function parseHardcoverResult(raw, index) {
       `search-${index + 1}`
   );
 
+  const seriesTitle = extractSeriesSnippet(item);
+  const seriesTotalRaw =
+    documentNode?.featured_series?.series?.primary_books_count ??
+    documentNode?.featured_series?.series?.books_count ??
+    documentNode?.book?.featured_series?.series?.primary_books_count ??
+    documentNode?.book?.featured_series?.series?.books_count ??
+    item?.featured_series?.series?.primary_books_count ??
+    item?.featured_series?.series?.books_count;
+  const seriesTotal = parseOptionalInt(seriesTotalRaw);
+  const rating = parseOptionalFloat(documentNode?.rating ?? item?.rating ?? documentNode?.book?.rating, 5);
+  const ratingsCount = parseOptionalInt(
+    documentNode?.ratings_count ?? item?.ratings_count ?? documentNode?.book?.ratings_count
+  );
+  const pages = parseOptionalInt(documentNode?.pages ?? item?.pages ?? documentNode?.book?.pages);
+  const releaseYear = parseOptionalInt(
+    documentNode?.release_year ?? item?.release_year ?? documentNode?.book?.release_year
+  );
+  const genres = sanitizeTextArray(documentNode?.genres ?? item?.genres ?? documentNode?.book?.genres, 12, 50);
+  const moods = sanitizeTextArray(documentNode?.moods ?? item?.moods ?? documentNode?.book?.moods, 8, 40);
+  const contentWarnings = sanitizeTextArray(
+    documentNode?.content_warnings ?? item?.content_warnings ?? documentNode?.book?.content_warnings,
+    10,
+    60
+  );
+
   return {
     id,
     title,
+    seriesTitle,
+    seriesTotal: seriesTotal && seriesTotal > 0 ? seriesTotal : null,
     authorNames,
-    imageUrl: sanitizeText(imageUrl, 600)
+    imageUrl: sanitizeText(imageUrl, 600),
+    rating,
+    ratingsCount,
+    pages,
+    releaseYear,
+    genres,
+    moods,
+    contentWarnings
   };
 }
 
@@ -571,10 +757,18 @@ app.post("/api/manga", async (req, res) => {
       ownedVolumes,
       status,
       notes,
+      mediaType,
       authorName,
       coverUrl,
       hardcoverBookId,
-      missingVolumes
+      missingVolumes,
+      genres,
+      moods,
+      contentWarnings,
+      rating,
+      ratingsCount,
+      pages,
+      releaseYear
     } = validation.value;
 
     const result = await db.run(
@@ -585,12 +779,20 @@ app.post("/api/manga", async (req, res) => {
         owned_volumes,
         status,
         notes,
+        media_type,
         author_name,
         cover_url,
         hardcover_book_id,
-        missing_volumes
+        missing_volumes,
+        genres,
+        moods,
+        content_warnings,
+        rating,
+        ratings_count,
+        pages,
+        release_year
       )
-      VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?)
+      VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?)
       `,
       [
         title,
@@ -598,10 +800,18 @@ app.post("/api/manga", async (req, res) => {
         ownedVolumes,
         status,
         notes || null,
+        mediaType,
         authorName || null,
         coverUrl || null,
         hardcoverBookId || null,
-        JSON.stringify(missingVolumes)
+        JSON.stringify(missingVolumes),
+        JSON.stringify(genres),
+        JSON.stringify(moods),
+        JSON.stringify(contentWarnings),
+        rating ?? null,
+        ratingsCount ?? null,
+        pages ?? null,
+        releaseYear ?? null
       ]
     );
 
@@ -632,10 +842,18 @@ app.put("/api/manga/:id", async (req, res) => {
       ownedVolumes,
       status,
       notes,
+      mediaType,
       authorName,
       coverUrl,
       hardcoverBookId,
-      missingVolumes
+      missingVolumes,
+      genres,
+      moods,
+      contentWarnings,
+      rating,
+      ratingsCount,
+      pages,
+      releaseYear
     } = validation.value;
 
     const result = await db.run(
@@ -646,10 +864,18 @@ app.put("/api/manga/:id", async (req, res) => {
           owned_volumes = ?,
           status = ?,
           notes = ?,
+          media_type = ?,
           author_name = ?,
           cover_url = ?,
           hardcover_book_id = ?,
-          missing_volumes = ?
+          missing_volumes = ?,
+          genres = ?,
+          moods = ?,
+          content_warnings = ?,
+          rating = ?,
+          ratings_count = ?,
+          pages = ?,
+          release_year = ?
       WHERE id = ?
       `,
       [
@@ -658,10 +884,18 @@ app.put("/api/manga/:id", async (req, res) => {
         ownedVolumes,
         status,
         notes || null,
+        mediaType,
         authorName || null,
         coverUrl || null,
         hardcoverBookId || null,
         JSON.stringify(missingVolumes),
+        JSON.stringify(genres),
+        JSON.stringify(moods),
+        JSON.stringify(contentWarnings),
+        rating ?? null,
+        ratingsCount ?? null,
+        pages ?? null,
+        releaseYear ?? null,
         id
       ]
     );
@@ -692,7 +926,7 @@ app.patch("/api/manga/:id/volumes", async (req, res) => {
   try {
     const db = await initDb();
     const manga = await db.get(
-      "SELECT id, owned_volumes, total_volumes, status FROM mangas WHERE id = ?",
+      "SELECT id, media_type, owned_volumes, total_volumes, status FROM mangas WHERE id = ?",
       [id]
     );
 
@@ -700,6 +934,9 @@ app.patch("/api/manga/:id/volumes", async (req, res) => {
       return res.status(404).json({ error: "Manga nicht gefunden." });
     }
 
+    if (manga.media_type === "book") {
+      return res.status(400).json({ error: "Bände können nur bei Manga erhöht werden." });
+    }
     const updatedOwnedVolumes = manga.owned_volumes + amount;
 
     if (manga.total_volumes !== null && updatedOwnedVolumes > manga.total_volumes) {
@@ -747,12 +984,15 @@ app.patch("/api/manga/:id/missing-volumes", async (req, res) => {
 
   try {
     const db = await initDb();
-    const manga = await db.get("SELECT id, owned_volumes, total_volumes FROM mangas WHERE id = ?", [id]);
+    const manga = await db.get("SELECT id, media_type, owned_volumes, total_volumes FROM mangas WHERE id = ?", [id]);
 
     if (!manga) {
       return res.status(404).json({ error: "Manga nicht gefunden." });
     }
 
+    if (manga.media_type === "book") {
+      return res.status(400).json({ error: "Fehlende Bände können nur bei Manga gesetzt werden." });
+    }
     const missingVolumes = normalizeMissingVolumes(req.body?.missingVolumes || [], manga.total_volumes);
 
     if (
@@ -800,11 +1040,15 @@ app.delete("/api/manga/:id", async (req, res) => {
 });
 
 app.get("/", (_req, res) => {
-  res.sendFile(path.join(__dirname, "..", "public", "index.html"));
+  res.sendFile(path.join(__dirname, "..", "public", "mangas.html"));
 });
 
 app.get("/mangas", (_req, res) => {
-  res.sendFile(path.join(__dirname, "..", "public", "mangas.html"));
+  res.redirect("/");
+});
+
+app.get("/create", (_req, res) => {
+  res.sendFile(path.join(__dirname, "..", "public", "index.html"));
 });
 
 app.get("/settings", (_req, res) => {

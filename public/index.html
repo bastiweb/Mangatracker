@@ -13,8 +13,8 @@
       <div class="container topbar-inner">
         <a class="brand" href="/">Manga Tracker</a>
         <nav class="nav-links">
-          <a class="active" href="/">Erfassen</a>
-          <a href="/mangas">Übersicht</a>
+          <a href="/">Übersicht</a>
+          <a class="active" href="/create">Erfassen</a>
           <a href="/settings">Settings</a>
         </nav>
         <button id="theme-toggle" class="secondary" type="button" aria-pressed="false">Darkmode</button>
@@ -30,7 +30,12 @@
           <label for="title">Titel</label>
           <input id="title" name="title" required maxlength="120" />
 
-          <div class="grid-2">
+          <label class="checkbox-inline" for="isBook">
+            <input id="isBook" name="isBook" type="checkbox" />
+            <span>Als Buch speichern (ohne Band-Tracking)</span>
+          </label>
+
+          <div id="volume-fields" class="grid-2">
             <div>
               <label for="ownedVolumes">Vorhandene Bände</label>
               <input id="ownedVolumes" name="ownedVolumes" type="number" min="0" required value="0" />
@@ -84,8 +89,8 @@
 
       <section class="panel">
         <h2>Schnellzugriff</h2>
-        <p class="muted">Zur Übersicht mit Suche, Sortierung und fehlenden Bänden:</p>
-        <a class="button-link" href="/mangas">Zur Manga-Übersicht</a>
+        <p class="muted">Zur Übersicht mit Suche, Sortierung und Filterung:</p>
+        <a class="button-link" href="/">Zur Übersicht</a>
       </section>
     </main>
   </body>

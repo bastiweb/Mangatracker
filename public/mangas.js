@@ -1,5 +1,6 @@
 const searchInput = document.getElementById("search");
 const sortSelect = document.getElementById("sort");
+const genreFilter = document.getElementById("genre-filter");
 const tableBody = document.getElementById("table-body");
 const emptyState = document.getElementById("empty-state");
 const count = document.getElementById("count");
@@ -9,7 +10,8 @@ const template = document.getElementById("manga-row-template");
 const state = {
   mangas: [],
   search: "",
-  sort: "updated_desc"
+  sort: "updated_desc",
+  genre: "all"
 };
 
 function setMessage(text, isError = false) {
@@ -27,8 +29,33 @@ function placeholderCover(title) {
   return `data:image/svg+xml;utf8,${encodeURIComponent(svg)}`;
 }
 
+function isBookEntry(entry) {
+  return entry.media_type === "book";
+}
+
+function mediaTypeLabel(entry) {
+  return isBookEntry(entry) ? "Buch" : "Manga";
+}
+
+function normalizeGenre(value) {
+  return String(value || "").trim();
+}
+
+function joinArray(value) {
+  return Array.isArray(value) ? value.join(" ") : "";
+}
+
 function toSearchText(manga) {
-  return [manga.title, manga.author_name, manga.notes, manga.status]
+  return [
+    manga.title,
+    manga.author_name,
+    manga.notes,
+    manga.status,
+    mediaTypeLabel(manga),
+    joinArray(manga.genres),
+    joinArray(manga.moods),
+    joinArray(manga.content_warnings)
+  ]
     .filter(Boolean)
     .join(" ")
     .toLowerCase();
@@ -60,48 +87,165 @@ function sortMangas(mangas, mode) {
   return clone;
 }
 
+function updateGenreOptions() {
+  if (!genreFilter) {
+    return;
+  }
+
+  const current = state.genre;
+  const genres = new Set();
+
+  state.mangas.forEach((manga) => {
+    if (!Array.isArray(manga.genres)) {
+      return;
+    }
+
+    manga.genres.forEach((genre) => {
+      const normalized = normalizeGenre(genre);
+      if (normalized) {
+        genres.add(normalized);
+      }
+    });
+  });
+
+  const options = ["all", ...Array.from(genres).sort((a, b) => a.localeCompare(b, "de"))];
+
+  genreFilter.innerHTML = "";
+  options.forEach((value) => {
+    const option = document.createElement("option");
+    option.value = value;
+    option.textContent = value === "all" ? "Alle Genres" : value;
+    genreFilter.appendChild(option);
+  });
+
+  if (!options.includes(current)) {
+    state.genre = "all";
+  }
+
+  genreFilter.value = state.genre;
+}
+
+function formatRating(manga) {
+  const ratingValue = Number(manga.rating);
+  if (!Number.isFinite(ratingValue) || ratingValue <= 0) {
+    return "";
+  }
+
+  const rounded = Math.round(ratingValue * 10) / 10;
+  const count = Number(manga.ratings_count);
+
+  if (Number.isInteger(count) && count > 0) {
+    return `Rating ${rounded} (${count})`;
+  }
+
+  return `Rating ${rounded}`;
+}
+
+function buildMetaLine(manga) {
+  const parts = [];
+  const ratingText = formatRating(manga);
+  const releaseYear = Number(manga.release_year);
+  const pages = Number(manga.pages);
+
+  if (ratingText) {
+    parts.push(ratingText);
+  }
+
+  if (Number.isInteger(releaseYear) && releaseYear > 0) {
+    parts.push(`Jahr ${releaseYear}`);
+  }
+
+  if (Number.isInteger(pages) && pages > 0) {
+    parts.push(`${pages} Seiten`);
+  }
+
+  return parts.join(" · ");
+}
+
+function renderChipGroup(container, label, items, extraClass = "") {
+  const values = Array.isArray(items)
+    ? items.map((entry) => normalizeGenre(entry)).filter(Boolean)
+    : [];
+
+  if (values.length === 0) {
+    return;
+  }
+
+  const group = document.createElement("div");
+  group.className = "chip-group";
+
+  const labelNode = document.createElement("span");
+  labelNode.className = "chip-label";
+  labelNode.textContent = label;
+  group.appendChild(labelNode);
+
+  const maxItems = 6;
+  values.slice(0, maxItems).forEach((value) => {
+    const chip = document.createElement("span");
+    chip.className = extraClass ? `chip ${extraClass}` : "chip";
+    chip.textContent = value;
+    group.appendChild(chip);
+  });
+
+  if (values.length > maxItems) {
+    const overflow = document.createElement("span");
+    overflow.className = extraClass ? `chip ${extraClass}` : "chip";
+    overflow.textContent = `+${values.length - maxItems}`;
+    group.appendChild(overflow);
+  }
+
+  container.appendChild(group);
+}
+
+function renderChips(container, manga) {
+  if (!container) {
+    return;
+  }
+
+  container.innerHTML = "";
+  renderChipGroup(container, "Genres", manga.genres);
+  renderChipGroup(container, "Stimmung", manga.moods);
+  renderChipGroup(container, "Warnungen", manga.content_warnings, "warning");
+  container.hidden = container.childElementCount === 0;
+}
+
 function filteredAndSortedMangas() {
   const searchTerm = state.search.trim().toLowerCase();
-  const filtered = searchTerm
+  const filteredBySearch = searchTerm
     ? state.mangas.filter((manga) => toSearchText(manga).includes(searchTerm))
     : state.mangas;
 
-  return sortMangas(filtered, state.sort);
+  const activeGenre = state.genre;
+  const filteredByGenre =
+    activeGenre && activeGenre !== "all"
+      ? filteredBySearch.filter((manga) => {
+          if (!Array.isArray(manga.genres)) {
+            return false;
+          }
+
+          return manga.genres.some(
+            (genre) => normalizeGenre(genre).toLowerCase() === activeGenre.toLowerCase()
+          );
+        })
+      : filteredBySearch;
+
+  return sortMangas(filteredByGenre, state.sort);
 }
 
-function canIncrease(manga, amount) {
-  return manga.total_volumes === null || manga.owned_volumes + amount <= manga.total_volumes;
-}
 
 async function fetchMangas() {
   const response = await fetch("/api/manga");
   const data = await response.json().catch(() => ({}));
 
   if (!response.ok) {
-    throw new Error(data.error || "Manga-Liste konnte nicht geladen werden.");
+    throw new Error(data.error || "Liste konnte nicht geladen werden.");
   }
 
   state.mangas = Array.isArray(data) ? data : [];
+  updateGenreOptions();
   render();
 }
 
-async function addVolumes(id, amount, title) {
-  const response = await fetch(`/api/manga/${id}/volumes`, {
-    method: "PATCH",
-    headers: { "Content-Type": "application/json" },
-    body: JSON.stringify({ amount })
-  });
-
-  const data = await response.json().catch(() => ({}));
-
-  if (!response.ok) {
-    throw new Error(data.error || "Bände konnten nicht hinzugefügt werden.");
-  }
-
-  const bandLabel = amount === 1 ? "Band" : "Bände";
-  setMessage(`${amount} ${bandLabel} zu "${title}" hinzugefügt.`);
-  await fetchMangas();
-}
 
 async function removeManga(id, title) {
   if (!confirm(`"${title}" wirklich löschen?`)) {
@@ -115,7 +259,7 @@ async function removeManga(id, title) {
     throw new Error(data.error || "Löschen fehlgeschlagen.");
   }
 
-  setMessage("Serie gelöscht.");
+  setMessage("Eintrag gelöscht.");
   await fetchMangas();
 }
 
@@ -140,13 +284,18 @@ function createMissingEditor(manga) {
   const container = document.createElement("div");
   container.className = "missing-editor";
 
+  if (isBookEntry(manga)) {
+    container.innerHTML = '<p class="muted">Nur für Manga verfügbar.</p>';
+    return container;
+  }
+
   if (manga.total_volumes === null) {
-    container.innerHTML = "<p class=\"muted\">Gesamtzahl fehlt.</p>";
+    container.innerHTML = '<p class="muted">Gesamtzahl fehlt.</p>';
     return container;
   }
 
   if (manga.total_volumes <= 0 || manga.owned_volumes >= manga.total_volumes) {
-    container.innerHTML = "<p class=\"muted\">Serie vollständig. Keine fehlenden Bände auswählbar.</p>";
+    container.innerHTML = '<p class="muted">Serie vollständig. Keine fehlenden Bände auswählbar.</p>';
     return container;
   }
 
@@ -215,17 +364,20 @@ function render() {
 
   mangas.forEach((manga) => {
     const row = template.content.firstElementChild.cloneNode(true);
+    const isBook = isBookEntry(manga);
 
     const cover = row.querySelector(".cover");
     const title = row.querySelector(".item-title");
     const badge = row.querySelector(".badge");
     const note = row.querySelector(".cell-note");
+    const mediaType = row.querySelector(".media-type");
     const authorLine = row.querySelector(".author-line");
     const volumes = row.querySelector(".volumes");
     const missingLine = row.querySelector(".missing-line");
+    const metaLine = row.querySelector(".meta-line");
+    const chipRow = row.querySelector(".chip-row");
 
-    const addOneBtn = row.querySelector('[data-action="add-1"]');
-    const addFiveBtn = row.querySelector('[data-action="add-5"]');
+
     const deleteBtn = row.querySelector('[data-action="delete"]');
     const editLink = row.querySelector('[data-action="edit"]');
     const editorTarget = row.querySelector("[data-editor]");
@@ -233,35 +385,27 @@ function render() {
     title.textContent = manga.title;
     badge.textContent = manga.status;
     note.textContent = manga.notes || "";
+    if (metaLine) {
+      const metaText = buildMetaLine(manga);
+      metaLine.textContent = metaText;
+      metaLine.hidden = !metaText;
+    }
+    renderChips(chipRow, manga);
+    mediaType.textContent = mediaTypeLabel(manga);
     authorLine.textContent = manga.author_name || "-";
-    volumes.textContent = `${manga.owned_volumes}${manga.total_volumes !== null ? ` / ${manga.total_volumes}` : ""}`;
-    const isCompleteSeries = manga.total_volumes !== null && manga.owned_volumes >= manga.total_volumes;
+    volumes.textContent = isBook
+      ? "Einzelbuch"
+      : `${manga.owned_volumes}${manga.total_volumes !== null ? ` / ${manga.total_volumes}` : ""}`;
+
+    const isCompleteSeries = !isBook && manga.total_volumes !== null && manga.owned_volumes >= manga.total_volumes;
     missingLine.textContent =
-      Array.isArray(manga.missing_volumes) && manga.missing_volumes.length > 0 && !isCompleteSeries
+      !isBook && Array.isArray(manga.missing_volumes) && manga.missing_volumes.length > 0 && !isCompleteSeries
         ? manga.missing_volumes.join(", ")
         : "-";
 
     cover.src = manga.cover_url || placeholderCover(manga.title);
     cover.alt = manga.cover_url ? `Cover von ${manga.title}` : `Platzhalter-Cover ${manga.title}`;
 
-    addOneBtn.disabled = !canIncrease(manga, 1);
-    addFiveBtn.disabled = !canIncrease(manga, 5);
-
-    addOneBtn.addEventListener("click", async () => {
-      try {
-        await addVolumes(manga.id, 1, manga.title);
-      } catch (error) {
-        setMessage(error.message, true);
-      }
-    });
-
-    addFiveBtn.addEventListener("click", async () => {
-      try {
-        await addVolumes(manga.id, 5, manga.title);
-      } catch (error) {
-        setMessage(error.message, true);
-      }
-    });
 
     deleteBtn.addEventListener("click", async () => {
       try {
@@ -271,7 +415,7 @@ function render() {
       }
     });
 
-    editLink.href = `/?edit=${manga.id}`;
+    editLink.href = `/create?edit=${manga.id}`;
     editorTarget.replaceWith(createMissingEditor(manga));
 
     tableBody.appendChild(row);
@@ -288,6 +432,13 @@ sortSelect.addEventListener("change", () => {
   render();
 });
 
+if (genreFilter) {
+  genreFilter.addEventListener("change", () => {
+    state.genre = genreFilter.value;
+    render();
+  });
+}
+
 MangaTheme.init();
 
 (async () => {
@@ -298,3 +449,14 @@ MangaTheme.init();
     setMessage(error.message, true);
   }
 })();
+
+
+
+
+
+
+
+
+
+
+

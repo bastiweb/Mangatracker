@@ -64,6 +64,31 @@ async function initDb() {
   await ensureColumn("mangas", "cover_url", "cover_url TEXT");
   await ensureColumn("mangas", "hardcover_book_id", "hardcover_book_id TEXT");
   await ensureColumn("mangas", "missing_volumes", "missing_volumes TEXT NOT NULL DEFAULT '[]'");
+  await ensureColumn("mangas", "media_type", "media_type TEXT NOT NULL DEFAULT 'manga'");
+  await ensureColumn("mangas", "genres", "genres TEXT NOT NULL DEFAULT '[]'");
+  await ensureColumn("mangas", "moods", "moods TEXT NOT NULL DEFAULT '[]'");
+  await ensureColumn("mangas", "content_warnings", "content_warnings TEXT NOT NULL DEFAULT '[]'");
+  await ensureColumn("mangas", "rating", "rating REAL");
+  await ensureColumn("mangas", "ratings_count", "ratings_count INTEGER");
+  await ensureColumn("mangas", "pages", "pages INTEGER");
+  await ensureColumn("mangas", "release_year", "release_year INTEGER");
+
+  await db.run("UPDATE mangas SET media_type = LOWER(TRIM(media_type)) WHERE media_type IS NOT NULL");
+  await db.run(
+    "UPDATE mangas SET media_type = 'manga' WHERE media_type IS NULL OR TRIM(media_type) = '' OR media_type NOT IN ('manga', 'book')"
+  );
+  await db.run(
+    "UPDATE mangas SET owned_volumes = 1, total_volumes = 1, missing_volumes = '[]' WHERE media_type = 'book'"
+  );
+  await db.run(
+    "UPDATE mangas SET genres = '[]' WHERE genres IS NULL OR TRIM(genres) = ''"
+  );
+  await db.run(
+    "UPDATE mangas SET moods = '[]' WHERE moods IS NULL OR TRIM(moods) = ''"
+  );
+  await db.run(
+    "UPDATE mangas SET content_warnings = '[]' WHERE content_warnings IS NULL OR TRIM(content_warnings) = ''"
+  );
 
   await db.run(
     "UPDATE mangas SET missing_volumes = '[]' WHERE missing_volumes IS NULL OR TRIM(missing_volumes) = ''"

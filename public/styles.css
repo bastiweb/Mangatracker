@@ -123,6 +123,19 @@ label {
   margin-bottom: 0.35rem;
 }
 
+.checkbox-inline {
+  display: flex;
+  align-items: center;
+  gap: 0.55rem;
+  font-weight: 600;
+  margin-bottom: 0.85rem;
+}
+
+.checkbox-inline input {
+  width: auto;
+  margin: 0;
+}
+
 input,
 select,
 textarea,
@@ -419,7 +432,7 @@ button.quick {
   }
 
   .controls {
-    grid-template-columns: 1fr 270px;
+    grid-template-columns: 1fr 240px 200px;
   }
 
   .search-row {
@@ -486,9 +499,54 @@ button.quick {
   gap: 0.32rem;
 }
 
+.media-type {
+  font-weight: 700;
+  white-space: nowrap;
+}
+
 .cell-note {
   margin: 0;
   font-size: 0.88rem;
+}
+
+.meta-line {
+  margin: 0;
+  font-size: 0.78rem;
+}
+
+.chip-row {
+  display: grid;
+  gap: 0.35rem;
+  margin-top: 0.35rem;
+}
+
+.chip-group {
+  display: flex;
+  flex-wrap: wrap;
+  align-items: center;
+  gap: 0.35rem;
+}
+
+.chip-label {
+  font-size: 0.65rem;
+  letter-spacing: 0.04em;
+  text-transform: uppercase;
+  color: var(--muted);
+  font-weight: 700;
+}
+
+.chip {
+  font-size: 0.7rem;
+  padding: 0.12rem 0.5rem;
+  border-radius: 999px;
+  background: var(--button-soft);
+  border: 1px solid var(--border);
+}
+
+.chip.warning {
+  background: var(--danger-soft);
+  color: var(--danger);
+  border-color: color-mix(in srgb, var(--danger) 40%, var(--border));
 }
 
 .manga-table .quick-actions {
@@ -508,3 +566,6 @@ button.quick {
   margin-top: 0;
   padding: 0.45rem;
 }
+
+
+
