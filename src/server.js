@@ -1,4 +1,5 @@
 const express = require("express");
+const crypto = require("crypto");
 const path = require("path");
 const { initDb } = require("./db");
 
@@ -6,10 +7,39 @@ const app = express();
 const PORT = process.env.PORT || 3003;
 const ALLOWED_STATUS = ["Geplant", "Sammle", "Pausiert", "Abgeschlossen"];
 const ALLOWED_MEDIA_TYPES = ["manga", "book"];
+const ALLOWED_ROLES = ["user", "admin"];
+const PASSWORD_MIN_LENGTH = 8;
+const USERNAME_MAX_LENGTH = 40;
+const SESSION_COOKIE = "manga_tracker_session";
+const SESSION_TTL_SECONDS = 60 * 60 * 24 * 7;
 const HARDCOVER_TOKEN_KEY = "hardcover_api_token";
+const REGISTRATION_SETTING_KEY = "allow_registration";
 const HARDCOVER_ENDPOINT = "https://api.hardcover.app/v1/graphql";
 
 app.use(express.json());
+app.use(
+  express.text({
+    type: ["text/*", "application/csv", "text/csv"],
+    limit: "5mb"
+  })
+);
+app.use(async (req, res, next) => {
+  if (req.path === "/admin.html") {
+    try {
+      const user = await getSessionUser(req);
+      if (!user) {
+        return res.redirect("/login");
+      }
+      if (user.role !== "admin") {
+        return res.redirect("/");
+      }
+    } catch (error) {
+      console.error(error);
+      return res.status(500).send("Auth check failed.");
+    }
+  }
+  return next();
+});
 app.use(express.static(path.join(__dirname, "..", "public"), { index: false }));
 
 function parsePositiveInt(value) {
@@ -138,7 +168,187 @@ function parseTextArrayFromDb(value, maxItems = 12) {
     return [];
   }
 }
+function sanitizeEmail(value) {
+  if (typeof value !== "string") {
+    return "";
+  }
 
+  return value.trim().toLowerCase().slice(0, 200);
+}
+
+function sanitizeUsername(value, maxLength = USERNAME_MAX_LENGTH) {
+  if (typeof value !== "string") {
+    return "";
+  }
+
+  return value.trim().replace(/\s+/g, " ").slice(0, maxLength);
+}
+
+function parseCookies(header) {
+  if (!header) {
+    return {};
+  }
+
+  return header.split(";").reduce((acc, part) => {
+    const [key, ...rest] = part.trim().split("=");
+    if (!key) {
+      return acc;
+    }
+
+    acc[key] = decodeURIComponent(rest.join("="));
+    return acc;
+  }, {});
+}
+
+function getSessionToken(req) {
+  const cookies = parseCookies(req.headers.cookie);
+  return cookies[SESSION_COOKIE] || "";
+}
+
+function hashToken(token) {
+  return crypto.createHash("sha256").update(token).digest("hex");
+}
+
+function hashPassword(password) {
+  const salt = crypto.randomBytes(16);
+  const hash = crypto.scryptSync(password, salt, 64, { N: 16384, r: 8, p: 1 });
+  return `scrypt$${salt.toString("hex")}$${hash.toString("hex")}`;
+}
+
+function parsePasswordHash(storedHash) {
+  if (!storedHash) {
+    return null;
+  }
+
+  if (storedHash.includes("$")) {
+    const [scheme, saltHex, hashHex] = storedHash.split("$");
+    if (scheme !== "scrypt" || !saltHex || !hashHex) {
+      return null;
+    }
+
+    return { scheme, saltHex, hashHex, legacy: false };
+  }
+
+  if (storedHash.startsWith("scrypt")) {
+    const legacy = storedHash.slice("scrypt".length);
+    const saltHex = legacy.slice(0, 32);
+    const hashHex = legacy.slice(32);
+    if (saltHex.length !== 32 || hashHex.length !== 128) {
+      return null;
+    }
+
+    return { scheme: "scrypt", saltHex, hashHex, legacy: true };
+  }
+
+  return null;
+}
+
+function verifyPassword(password, storedHash) {
+  const parsed = parsePasswordHash(storedHash);
+  if (!parsed) {
+    return { ok: false, legacy: false };
+  }
+
+  const hash = crypto.scryptSync(password, Buffer.from(parsed.saltHex, "hex"), 64, { N: 16384, r: 8, p: 1 });
+  const expected = Buffer.from(parsed.hashHex, "hex");
+
+  if (expected.length !== hash.length) {
+    return { ok: false, legacy: parsed.legacy };
+  }
+
+  return { ok: crypto.timingSafeEqual(expected, hash), legacy: parsed.legacy };
+}
+
+function sanitizeUser(row) {
+  if (!row) {
+    return null;
+  }
+
+  return {
+    id: row.id,
+    email: row.email,
+    role: row.role,
+    username: row.username || ""
+  };
+}
+
+function buildSessionCookieOptions(req) {
+  const forwardedProto = req.headers["x-forwarded-proto"];
+  const isSecure = req.secure || forwardedProto === "https";
+
+  return {
+    httpOnly: true,
+    sameSite: "lax",
+    secure: isSecure,
+    maxAge: SESSION_TTL_SECONDS * 1000,
+    path: "/"
+  };
+}
+
+async function getSessionUser(req) {
+  const token = getSessionToken(req);
+  if (!token) {
+    return null;
+  }
+
+  const db = await initDb();
+  const tokenHash = hashToken(token);
+  const now = Math.floor(Date.now() / 1000);
+
+  const row = await db.get(
+    "SELECT sessions.user_id, sessions.expires_at, users.email, users.role, users.username FROM sessions JOIN users ON sessions.user_id = users.id WHERE sessions.token_hash = ? AND sessions.expires_at > ?",
+    [tokenHash, now]
+  );
+
+  if (!row) {
+    return null;
+  }
+
+  return {
+    id: row.user_id,
+    email: row.email,
+    role: row.role,
+    username: row.username || ""
+  };
+}
+
+async function requireAuth(req, res, next) {
+  try {
+    const user = await getSessionUser(req);
+    if (!user) {
+      return res.status(401).json({ error: "Bitte erneut einloggen." });
+    }
+
+    req.user = user;
+    return next();
+  } catch (error) {
+    console.error(error);
+    return res.status(500).json({ error: "Authentifizierung fehlgeschlagen." });
+  }
+}
+
+async function requireAdmin(req, res, next) {
+  try {
+    const user = await getSessionUser(req);
+    if (!user) {
+      return res.status(401).json({ error: "Bitte erneut einloggen." });
+    }
+
+    if (user.role !== "admin") {
+      return res.status(403).json({ error: "Keine Berechtigung." });
+    }
+
+    req.user = user;
+    return next();
+  } catch (error) {
+    console.error(error);
+    return res.status(500).json({ error: "Authentifizierung fehlgeschlagen." });
+  }
+}
+
+async function fetchMangaForUser(db, id, user) {
+  return db.get("SELECT * FROM mangas WHERE id = ? AND user_id = ?", [id, user.id]);
+}
 function normalizeMangaRow(row) {
   const mediaType = row.media_type === "book" ? "book" : "manga";
 
@@ -155,8 +365,136 @@ function normalizeMangaRow(row) {
     rating: row.rating ?? null,
     ratings_count: row.ratings_count ?? null,
     pages: row.pages ?? null,
-    release_year: row.release_year ?? null
+    release_year: row.release_year ?? null,
+    user_rating: row.user_rating ?? null,
+    user_review: row.user_review ?? ""
   };
+}
+
+function toCsvValue(value) {
+  if (value === null || value === undefined) {
+    return "";
+  }
+
+  const stringValue = String(value);
+  if (stringValue.includes("\"") || stringValue.includes(",") || stringValue.includes("\n") || stringValue.includes("\r")) {
+    return `"${stringValue.replace(/"/g, "\"\"")}"`;
+  }
+
+  return stringValue;
+}
+
+function joinCsvArray(value) {
+  if (!Array.isArray(value) || value.length === 0) {
+    return "";
+  }
+
+  return value.join(" | ");
+}
+
+function parseCsv(content) {
+  if (typeof content !== "string") {
+    return [];
+  }
+
+  const text = content.replace(/^\uFEFF/, "");
+  const rows = [];
+  let row = [];
+  let field = "";
+  let inQuotes = false;
+
+  for (let i = 0; i < text.length; i += 1) {
+    const char = text[i];
+
+    if (inQuotes) {
+      if (char === "\"") {
+        if (text[i + 1] === "\"") {
+          field += "\"";
+          i += 1;
+        } else {
+          inQuotes = false;
+        }
+      } else {
+        field += char;
+      }
+      continue;
+    }
+
+    if (char === "\"") {
+      inQuotes = true;
+      continue;
+    }
+
+    if (char === ",") {
+      row.push(field);
+      field = "";
+      continue;
+    }
+
+    if (char === "\n") {
+      row.push(field);
+      rows.push(row);
+      row = [];
+      field = "";
+      continue;
+    }
+
+    if (char === "\r") {
+      continue;
+    }
+
+    field += char;
+  }
+
+  if (field.length > 0 || row.length > 0) {
+    row.push(field);
+    rows.push(row);
+  }
+
+  return rows.filter((entries) => entries.some((entry) => String(entry || "").trim() !== ""));
+}
+
+function parseCsvList(value, maxLength = 60) {
+  if (!value) {
+    return [];
+  }
+
+  return String(value)
+    .split("|")
+    .map((entry) => sanitizeText(entry, maxLength))
+    .map((entry) => entry.trim())
+    .filter(Boolean);
+}
+
+function parseCsvNumbers(value) {
+  if (!value) {
+    return [];
+  }
+
+  return String(value)
+    .split("|")
+    .map((entry) => Number(entry.trim()))
+    .filter((entry) => Number.isInteger(entry) && entry > 0);
+}
+
+function buildImportKey(title, mediaType) {
+  return `${String(mediaType || "").toLowerCase()}::${String(title || "").trim().toLowerCase()}`;
+}
+
+function validateReviewPayload(payload) {
+  const ratingRaw = payload?.userRating;
+  const review = sanitizeText(payload?.userReview || "", 1200);
+
+  if (ratingRaw === null || ratingRaw === undefined || ratingRaw === "") {
+    return { value: { userRating: null, userReview: review || "" } };
+  }
+
+  const rating = Number(ratingRaw);
+  if (!Number.isInteger(rating) || rating < 1 || rating > 5) {
+    return { error: "Bewertung muss zwischen 1 und 5 liegen." };
+  }
+
+  return { value: { userRating: rating, userReview: review || "" } };
 }
 
 function validatePayload(payload) {
@@ -262,6 +600,20 @@ async function setSetting(key, value) {
     `,
     [key, value]
   );
+}
+
+async function getRegistrationSetting() {
+  const value = await getSetting(REGISTRATION_SETTING_KEY);
+  if (value === null || value === undefined || value === "") {
+    return true;
+  }
+
+  return String(value).toLowerCase() === "true";
+}
+
+async function setRegistrationSetting(allowRegistration) {
+  const normalized = allowRegistration ? "true" : "false";
+  await setSetting(REGISTRATION_SETTING_KEY, normalized);
 }
 
 function buildTokenPreview(token) {
@@ -622,7 +974,185 @@ app.get("/api/health", (_req, res) => {
   res.json({ ok: true });
 });
 
-app.get("/api/settings/hardcover-token", async (_req, res) => {
+app.get("/api/auth/bootstrap", async (_req, res) => {
+  try {
+    const db = await initDb();
+    const row = await db.get("SELECT COUNT(*) AS count FROM users");
+    const hasUsers = (row?.count || 0) > 0;
+    const allowRegistration = !hasUsers || (await getRegistrationSetting());
+    return res.json({ hasUsers, allowRegistration });
+  } catch (error) {
+    console.error(error);
+    return res.status(500).json({ error: "Auth-Status konnte nicht geladen werden." });
+  }
+});
+
+app.get("/api/auth/me", requireAuth, (req, res) => {
+  return res.json({ user: req.user });
+});
+
+app.post("/api/auth/login", async (req, res) => {
+  const rawIdentifier = String(req.body?.identifier ?? req.body?.email ?? "");
+  const identifier = rawIdentifier.trim();
+  const password = String(req.body?.password || "");
+
+  if (!identifier || !password) {
+    return res.status(400).json({ error: "Bitte E-Mail oder Benutzernamen sowie Passwort angeben." });
+  }
+
+  try {
+    const db = await initDb();
+    let user = null;
+
+    if (identifier.includes("@")) {
+      const email = sanitizeEmail(identifier);
+      user = await db.get("SELECT * FROM users WHERE LOWER(email) = ?", [email]);
+    } else {
+      const username = sanitizeUsername(identifier);
+      if (!username) {
+        return res.status(400).json({ error: "Bitte E-Mail oder Benutzernamen angeben." });
+      }
+      const usernameKey = username.toLowerCase();
+      const matches = await db.all("SELECT * FROM users WHERE LOWER(username) = ?", [usernameKey]);
+      if (matches.length > 1) {
+        return res
+          .status(400)
+          .json({ error: "Benutzername ist nicht eindeutig. Bitte E-Mail verwenden." });
+      }
+      user = matches[0] || null;
+    }
+
+    const verification = user ? verifyPassword(password, user.password_hash) : { ok: false, legacy: false };
+
+    if (!user || !verification.ok) {
+      return res.status(401).json({ error: "Login fehlgeschlagen." });
+    }
+
+    if (verification.legacy) {
+      const upgradedHash = hashPassword(password);
+      await db.run("UPDATE users SET password_hash = ? WHERE id = ?", [upgradedHash, user.id]);
+    }
+
+    const token = crypto.randomBytes(32).toString("hex");
+    const tokenHash = hashToken(token);
+    const expiresAt = Math.floor(Date.now() / 1000) + SESSION_TTL_SECONDS;
+
+    await db.run(
+      "INSERT INTO sessions (user_id, token_hash, expires_at) VALUES (?, ?, ?)",
+      [user.id, tokenHash, expiresAt]
+    );
+
+    res.cookie(SESSION_COOKIE, token, buildSessionCookieOptions(req));
+    return res.json({ user: sanitizeUser(user) });
+  } catch (error) {
+    console.error(error);
+    return res.status(500).json({ error: "Login fehlgeschlagen." });
+  }
+});
+
+app.post("/api/auth/logout", async (req, res) => {
+  try {
+    const token = getSessionToken(req);
+    if (token) {
+      const db = await initDb();
+      await db.run("DELETE FROM sessions WHERE token_hash = ?", [hashToken(token)]);
+    }
+
+    res.clearCookie(SESSION_COOKIE, { path: "/" });
+    return res.status(204).send();
+  } catch (error) {
+    console.error(error);
+    return res.status(500).json({ error: "Logout fehlgeschlagen." });
+  }
+});
+
+app.post("/api/auth/register", async (req, res) => {
+  const email = sanitizeEmail(req.body?.email || "");
+  const username = sanitizeUsername(req.body?.username || "");
+  const password = String(req.body?.password || "");
+  const desiredRole = String(req.body?.role || "").toLowerCase();
+
+  if (!email || !email.includes("@")) {
+    return res.status(400).json({ error: "Bitte eine gültige E-Mail angeben." });
+  }
+
+  if (!password || password.length < PASSWORD_MIN_LENGTH) {
+    return res.status(400).json({ error: `Passwort muss mindestens ${PASSWORD_MIN_LENGTH} Zeichen haben.` });
+  }
+
+  if (!username) {
+    return res.status(400).json({ error: "Bitte einen Benutzernamen angeben." });
+  }
+
+  try {
+    const db = await initDb();
+    const stats = await db.get("SELECT COUNT(*) AS count FROM users");
+    const hasUsers = (stats?.count || 0) > 0;
+    const allowRegistration = await getRegistrationSetting();
+    const existing = await db.get("SELECT id FROM users WHERE LOWER(email) = ?", [email]);
+    if (existing) {
+      return res.status(409).json({ error: "Diese E-Mail ist bereits registriert." });
+    }
+    const usernameKey = username.toLowerCase();
+    const usernameExists = await db.get("SELECT id FROM users WHERE LOWER(username) = ?", [usernameKey]);
+    if (usernameExists) {
+      return res.status(409).json({ error: "Benutzername ist bereits vergeben." });
+    }
+
+    let role = "user";
+    let creator = null;
+
+    if (!hasUsers) {
+      role = "admin";
+    } else {
+      creator = await getSessionUser(req);
+      if (creator && creator.role === "admin") {
+        if (ALLOWED_ROLES.includes(desiredRole)) {
+          role = desiredRole;
+        }
+      } else {
+        if (!allowRegistration) {
+          return res.status(403).json({ error: "Registrierung ist deaktiviert." });
+        }
+        role = "user";
+      }
+    }
+
+    const passwordHash = hashPassword(password);
+    const result = await db.run(
+      "INSERT INTO users (email, username, password_hash, role) VALUES (?, ?, ?, ?)",
+      [email, username, passwordHash, role]
+    );
+
+    const created = await db.get("SELECT id, email, username, role FROM users WHERE id = ?", [result.lastID]);
+
+    if (!hasUsers) {
+      await db.run("UPDATE mangas SET user_id = ? WHERE user_id IS NULL", [created.id]);
+
+      const token = crypto.randomBytes(32).toString("hex");
+      const tokenHash = hashToken(token);
+      const expiresAt = Math.floor(Date.now() / 1000) + SESSION_TTL_SECONDS;
+
+      await db.run(
+        "INSERT INTO sessions (user_id, token_hash, expires_at) VALUES (?, ?, ?)",
+        [created.id, tokenHash, expiresAt]
+      );
+
+      res.cookie(SESSION_COOKIE, token, buildSessionCookieOptions(req));
+    }
+
+    return res.status(201).json({ user: sanitizeUser(created) });
+  } catch (error) {
+    if (String(error?.message || "").includes("UNIQUE")) {
+      return res.status(409).json({ error: "Diese E-Mail ist bereits registriert." });
+    }
+
+    console.error(error);
+    return res.status(500).json({ error: "Registrierung fehlgeschlagen." });
+  }
+});
+
+app.get("/api/settings/hardcover-token", requireAdmin, async (_req, res) => {
   try {
     const token = await getSetting(HARDCOVER_TOKEN_KEY);
     return res.json({ hasToken: Boolean(token), tokenPreview: buildTokenPreview(token) });
@@ -632,7 +1162,7 @@ app.get("/api/settings/hardcover-token", async (_req, res) => {
   }
 });
 
-app.put("/api/settings/hardcover-token", async (req, res) => {
+app.put("/api/settings/hardcover-token", requireAdmin, async (req, res) => {
   const token = sanitizeText(req.body?.token || "", 4000);
 
   try {
@@ -644,7 +1174,477 @@ app.put("/api/settings/hardcover-token", async (req, res) => {
   }
 });
 
-app.get("/api/hardcover/search", async (req, res) => {
+app.put("/api/settings/profile", requireAuth, async (req, res) => {
+  const username = sanitizeUsername(req.body?.username || "");
+
+  if (!username) {
+    return res.status(400).json({ error: "Bitte einen Benutzernamen angeben." });
+  }
+
+  try {
+    const db = await initDb();
+    const usernameKey = username.toLowerCase();
+    const existing = await db.get("SELECT id FROM users WHERE LOWER(username) = ? AND id != ?", [
+      usernameKey,
+      req.user.id
+    ]);
+    if (existing) {
+      return res.status(409).json({ error: "Benutzername ist bereits vergeben." });
+    }
+    await db.run("UPDATE users SET username = ? WHERE id = ?", [username, req.user.id]);
+    const updated = await db.get("SELECT id, email, username, role FROM users WHERE id = ?", [req.user.id]);
+    return res.json({ user: sanitizeUser(updated) });
+  } catch (error) {
+    console.error(error);
+    return res.status(500).json({ error: "Profil konnte nicht gespeichert werden." });
+  }
+});
+
+app.get("/api/admin/registration", requireAdmin, async (_req, res) => {
+  try {
+    const allowRegistration = await getRegistrationSetting();
+    return res.json({ allowRegistration });
+  } catch (error) {
+    console.error(error);
+    return res.status(500).json({ error: "Registrierungseinstellung konnte nicht geladen werden." });
+  }
+});
+
+app.put("/api/admin/registration", requireAdmin, async (req, res) => {
+  const rawValue = req.body?.allowRegistration;
+  const allowRegistration =
+    rawValue === true ||
+    rawValue === "true" ||
+    rawValue === 1 ||
+    rawValue === "1";
+
+  try {
+    await setRegistrationSetting(allowRegistration);
+    return res.json({ allowRegistration });
+  } catch (error) {
+    console.error(error);
+    return res.status(500).json({ error: "Registrierungseinstellung konnte nicht gespeichert werden." });
+  }
+});
+
+app.get("/api/admin/users", requireAdmin, async (_req, res) => {
+  try {
+    const db = await initDb();
+    const users = await db.all(`
+      SELECT
+        users.id,
+        users.email,
+        users.username,
+        users.role,
+        users.created_at,
+        (SELECT COUNT(*) FROM mangas WHERE user_id = users.id) AS entries_count,
+        (SELECT COUNT(*) FROM sessions WHERE user_id = users.id) AS session_count,
+        (SELECT MAX(created_at) FROM sessions WHERE user_id = users.id) AS last_session_at
+      FROM users
+      ORDER BY users.created_at ASC
+    `);
+    return res.json({ users });
+  } catch (error) {
+    console.error(error);
+    return res.status(500).json({ error: "Nutzer konnten nicht geladen werden." });
+  }
+});
+
+app.delete("/api/admin/users/:id/sessions", requireAdmin, async (req, res) => {
+  const id = parseId(req.params.id);
+  if (id === null) {
+    return res.status(400).json({ error: "Ungültige Nutzer-ID." });
+  }
+
+  if (req.user && req.user.id === id) {
+    return res.status(400).json({ error: "Du kannst dich nicht selbst abmelden." });
+  }
+
+  try {
+    const db = await initDb();
+    const result = await db.run("DELETE FROM sessions WHERE user_id = ?", [id]);
+    return res.json({ cleared: result.changes || 0 });
+  } catch (error) {
+    console.error(error);
+    return res.status(500).json({ error: "Sessions konnten nicht beendet werden." });
+  }
+});
+
+app.put("/api/admin/users/:id/role", requireAdmin, async (req, res) => {
+  const id = parseId(req.params.id);
+  if (id === null) {
+    return res.status(400).json({ error: "Ungültige Nutzer-ID." });
+  }
+
+  const role = String(req.body?.role || "").toLowerCase();
+  if (!ALLOWED_ROLES.includes(role)) {
+    return res.status(400).json({ error: "Ungültige Rolle." });
+  }
+
+  try {
+    const db = await initDb();
+    const user = await db.get("SELECT id, email, role FROM users WHERE id = ?", [id]);
+
+    if (!user) {
+      return res.status(404).json({ error: "Nutzer nicht gefunden." });
+    }
+
+    if (req.user && req.user.id === user.id && role !== "admin") {
+      return res.status(400).json({ error: "Du kannst dir selbst keine Rechte entziehen." });
+    }
+
+    if (user.role === "admin" && role !== "admin") {
+      const adminCount = await db.get("SELECT COUNT(*) AS count FROM users WHERE role = 'admin'");
+      if ((adminCount?.count || 0) <= 1) {
+        return res.status(400).json({ error: "Mindestens ein Admin muss erhalten bleiben." });
+      }
+    }
+
+    await db.run("UPDATE users SET role = ? WHERE id = ?", [role, id]);
+    const updated = await db.get("SELECT id, email, role, created_at FROM users WHERE id = ?", [id]);
+    return res.json({ user: updated });
+  } catch (error) {
+    console.error(error);
+    return res.status(500).json({ error: "Rolle konnte nicht aktualisiert werden." });
+  }
+});
+
+app.put("/api/admin/users/:id/password", requireAdmin, async (req, res) => {
+  const id = parseId(req.params.id);
+  if (id === null) {
+    return res.status(400).json({ error: "Ungültige Nutzer-ID." });
+  }
+
+  const password = String(req.body?.password || "");
+  if (!password || password.length < PASSWORD_MIN_LENGTH) {
+    return res
+      .status(400)
+      .json({ error: `Passwort muss mindestens ${PASSWORD_MIN_LENGTH} Zeichen haben.` });
+  }
+
+  try {
+    const db = await initDb();
+    const user = await db.get("SELECT id FROM users WHERE id = ?", [id]);
+
+    if (!user) {
+      return res.status(404).json({ error: "Nutzer nicht gefunden." });
+    }
+
+    const passwordHash = hashPassword(password);
+    await db.run("UPDATE users SET password_hash = ? WHERE id = ?", [passwordHash, id]);
+
+    return res.json({ ok: true });
+  } catch (error) {
+    console.error(error);
+    return res.status(500).json({ error: "Passwort konnte nicht gespeichert werden." });
+  }
+});
+
+app.get("/api/export/csv", requireAuth, async (req, res) => {
+  try {
+    const db = await initDb();
+    const rows = await db.all("SELECT * FROM mangas WHERE user_id = ? ORDER BY updated_at DESC, id DESC", [
+      req.user.id
+    ]);
+
+    const normalized = rows.map(normalizeMangaRow);
+    const headers = [
+      "title",
+      "media_type",
+      "status",
+      "owned_volumes",
+      "total_volumes",
+      "missing_volumes",
+      "cover_url",
+      "hardcover_book_id",
+      "author_name",
+      "notes",
+      "genres",
+      "moods",
+      "content_warnings",
+      "rating",
+      "ratings_count",
+      "pages",
+      "release_year",
+      "user_rating",
+      "user_review",
+      "created_at",
+      "updated_at"
+    ];
+
+    const lines = [headers.join(",")];
+
+    normalized.forEach((manga) => {
+      const values = [
+        manga.title,
+        manga.media_type,
+        manga.status,
+        manga.owned_volumes,
+        manga.total_volumes ?? "",
+        joinCsvArray(manga.missing_volumes),
+        manga.cover_url || "",
+        manga.hardcover_book_id || "",
+        manga.author_name,
+        manga.notes,
+        joinCsvArray(manga.genres),
+        joinCsvArray(manga.moods),
+        joinCsvArray(manga.content_warnings),
+        manga.rating ?? "",
+        manga.ratings_count ?? "",
+        manga.pages ?? "",
+        manga.release_year ?? "",
+        manga.user_rating ?? "",
+        manga.user_review ?? "",
+        manga.created_at || "",
+        manga.updated_at || ""
+      ];
+
+      lines.push(values.map(toCsvValue).join(","));
+    });
+
+    const csv = `\uFEFF${lines.join("\n")}`;
+    const dateStamp = new Date().toISOString().slice(0, 10);
+
+    res.setHeader("Content-Type", "text/csv; charset=utf-8");
+    res.setHeader("Content-Disposition", `attachment; filename="manga-export-${dateStamp}.csv"`);
+    return res.send(csv);
+  } catch (error) {
+    console.error(error);
+    return res.status(500).json({ error: "CSV-Export fehlgeschlagen." });
+  }
+});
+
+app.post("/api/import/csv/preview", requireAuth, async (req, res) => {
+  try {
+    const csvText = typeof req.body === "string" ? req.body : "";
+    if (!csvText.trim()) {
+      return res.status(400).json({ error: "CSV-Datei ist leer." });
+    }
+
+    const rows = parseCsv(csvText);
+    if (rows.length < 2) {
+      return res.status(400).json({ error: "CSV enthält keine Daten." });
+    }
+
+    const headerRow = rows[0].map((entry) => String(entry || "").trim().toLowerCase());
+    const headerIndex = headerRow.reduce((acc, header, index) => {
+      if (header) {
+        acc[header] = index;
+      }
+      return acc;
+    }, {});
+
+    if (headerIndex.title === undefined) {
+      return res.status(400).json({ error: "CSV benötigt eine Spalte 'title'." });
+    }
+
+    const db = await initDb();
+    const existingRows = await db.all("SELECT title, media_type FROM mangas WHERE user_id = ?", [req.user.id]);
+    const existingKeys = new Set(
+      existingRows.map((row) => buildImportKey(row.title, row.media_type || "manga"))
+    );
+    const seenKeys = new Set();
+
+    let total = 0;
+    let newCount = 0;
+    let duplicateCount = 0;
+    const duplicates = [];
+    const errors = [];
+
+    for (let i = 1; i < rows.length; i += 1) {
+      const row = rows[i];
+      const getValue = (key) => row[headerIndex[key]] ?? "";
+
+      const title = sanitizeText(getValue("title"), 120);
+      if (!title) {
+        continue;
+      }
+
+      const rawMediaType = sanitizeText(getValue("media_type") || "manga", 20).toLowerCase();
+      const mediaType = ALLOWED_MEDIA_TYPES.includes(rawMediaType) ? rawMediaType : "manga";
+      const key = buildImportKey(title, mediaType);
+
+      total += 1;
+
+      if (existingKeys.has(key) || seenKeys.has(key)) {
+        duplicateCount += 1;
+        if (duplicates.length < 5) {
+          duplicates.push(`${title} (${mediaType})`);
+        }
+        continue;
+      }
+
+      seenKeys.add(key);
+      newCount += 1;
+    }
+
+    return res.json({ total, newCount, duplicateCount, duplicates, errors });
+  } catch (error) {
+    console.error(error);
+    return res.status(500).json({ error: "CSV-Prüfung fehlgeschlagen." });
+  }
+});
+
+app.post("/api/import/csv", requireAuth, async (req, res) => {
+  try {
+    const csvText = typeof req.body === "string" ? req.body : "";
+    if (!csvText.trim()) {
+      return res.status(400).json({ error: "CSV-Datei ist leer." });
+    }
+
+    const rows = parseCsv(csvText);
+    if (rows.length < 2) {
+      return res.status(400).json({ error: "CSV enthält keine Daten." });
+    }
+
+    const headerRow = rows[0].map((entry) => String(entry || "").trim().toLowerCase());
+    const headerIndex = headerRow.reduce((acc, header, index) => {
+      if (header) {
+        acc[header] = index;
+      }
+      return acc;
+    }, {});
+
+    if (headerIndex.title === undefined) {
+      return res.status(400).json({ error: "CSV benötigt eine Spalte 'title'." });
+    }
+
+    const db = await initDb();
+    const existingRows = await db.all("SELECT title, media_type FROM mangas WHERE user_id = ?", [req.user.id]);
+    const existingKeys = new Set(
+      existingRows.map((row) => buildImportKey(row.title, row.media_type || "manga"))
+    );
+    const seenKeys = new Set();
+
+    let imported = 0;
+    let skipped = 0;
+    const errors = [];
+
+    for (let i = 1; i < rows.length; i += 1) {
+      const row = rows[i];
+      const getValue = (key) => row[headerIndex[key]] ?? "";
+
+      const title = sanitizeText(getValue("title"), 120);
+      if (!title) {
+        skipped += 1;
+        continue;
+      }
+
+      const rawMediaType = sanitizeText(getValue("media_type") || "manga", 20).toLowerCase();
+      const mediaType = ALLOWED_MEDIA_TYPES.includes(rawMediaType) ? rawMediaType : "manga";
+      const dedupeKey = buildImportKey(title, mediaType);
+      if (existingKeys.has(dedupeKey) || seenKeys.has(dedupeKey)) {
+        skipped += 1;
+        continue;
+      }
+
+      let status = sanitizeText(getValue("status") || "Sammle", 40);
+      if (!ALLOWED_STATUS.includes(status)) {
+        status = "Sammle";
+      }
+
+      let ownedVolumes = parseNonNegativeInt(getValue("owned_volumes"));
+      let totalVolumes = parseOptionalInt(getValue("total_volumes"));
+      let missingVolumes = parseCsvNumbers(getValue("missing_volumes"));
+
+      if (mediaType === "book") {
+        ownedVolumes = 1;
+        totalVolumes = 1;
+        missingVolumes = [];
+      } else {
+        if (ownedVolumes === null) {
+          ownedVolumes = 0;
+        }
+
+        if (totalVolumes !== null && totalVolumes < ownedVolumes) {
+          totalVolumes = ownedVolumes;
+        }
+
+        missingVolumes = normalizeMissingVolumes(missingVolumes, totalVolumes);
+      }
+
+      const authorName = sanitizeText(getValue("author_name"), 200);
+      const notes = sanitizeText(getValue("notes"), 600);
+      const coverUrl = sanitizeText(getValue("cover_url"), 600);
+      const hardcoverBookId = sanitizeText(getValue("hardcover_book_id"), 80);
+      const genres = parseCsvList(getValue("genres"), 60);
+      const moods = parseCsvList(getValue("moods"), 40);
+      const contentWarnings = parseCsvList(getValue("content_warnings"), 60);
+      const rating = parseOptionalFloat(getValue("rating"), 5);
+      const ratingsCount = parseOptionalInt(getValue("ratings_count"));
+      const pages = parseOptionalInt(getValue("pages"));
+      const releaseYear = parseOptionalInt(getValue("release_year"));
+      const userRatingRaw = parseOptionalInt(getValue("user_rating"));
+      const userRating =
+        userRatingRaw !== null && userRatingRaw >= 1 && userRatingRaw <= 5 ? userRatingRaw : null;
+      const userReview = sanitizeText(getValue("user_review"), 1200);
+
+      try {
+        await db.run(
+          `
+            INSERT INTO mangas (
+              user_id,
+              title,
+              total_volumes,
+              owned_volumes,
+              status,
+              notes,
+              media_type,
+              author_name,
+              cover_url,
+              hardcover_book_id,
+              missing_volumes,
+              genres,
+              moods,
+              content_warnings,
+              rating,
+              ratings_count,
+              pages,
+              release_year,
+              user_rating,
+              user_review
+            )
+            VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?)
+          `,
+          [
+            req.user.id,
+            title,
+            totalVolumes,
+            ownedVolumes,
+            status,
+            notes || null,
+            mediaType,
+            authorName || null,
+            coverUrl || null,
+            hardcoverBookId || null,
+            JSON.stringify(missingVolumes),
+            JSON.stringify(genres),
+            JSON.stringify(moods),
+            JSON.stringify(contentWarnings),
+            rating ?? null,
+            ratingsCount ?? null,
+            pages ?? null,
+            releaseYear ?? null,
+            userRating ?? null,
+            userReview || null
+          ]
+        );
+        imported += 1;
+        seenKeys.add(dedupeKey);
+      } catch (error) {
+        skipped += 1;
+        errors.push(`Zeile ${i + 1}: ${error.message || "Import fehlgeschlagen"}`);
+      }
+    }
+
+    return res.json({ imported, skipped, errors: errors.slice(0, 10) });
+  } catch (error) {
+    console.error(error);
+    return res.status(500).json({ error: "CSV-Import fehlgeschlagen." });
+  }
+});
+
+app.get("/api/hardcover/search", requireAuth, async (req, res) => {
   const query = sanitizeText(req.query.query || "", 180);
   if (!query) {
     return res.status(400).json({ error: "Bitte einen Suchbegriff angeben." });
@@ -712,10 +1712,12 @@ app.get("/api/hardcover/search", async (req, res) => {
   }
 });
 
-app.get("/api/manga", async (_req, res) => {
+app.get("/api/manga", requireAuth, async (req, res) => {
   try {
     const db = await initDb();
-    const mangas = await db.all("SELECT * FROM mangas ORDER BY updated_at DESC, id DESC");
+    const mangas = await db.all("SELECT * FROM mangas WHERE user_id = ? ORDER BY updated_at DESC, id DESC", [
+      req.user.id
+    ]);
     res.json(mangas.map(normalizeMangaRow));
   } catch (error) {
     console.error(error);
@@ -723,7 +1725,7 @@ app.get("/api/manga", async (_req, res) => {
   }
 });
 
-app.get("/api/manga/:id", async (req, res) => {
+app.get("/api/manga/:id", requireAuth, async (req, res) => {
   const id = parseId(req.params.id);
   if (id === null) {
     return res.status(400).json({ error: "Ungültige ID." });
@@ -731,7 +1733,7 @@ app.get("/api/manga/:id", async (req, res) => {
 
   try {
     const db = await initDb();
-    const manga = await db.get("SELECT * FROM mangas WHERE id = ?", [id]);
+    const manga = await fetchMangaForUser(db, id, req.user);
 
     if (!manga) {
       return res.status(404).json({ error: "Manga nicht gefunden." });
@@ -743,7 +1745,7 @@ app.get("/api/manga/:id", async (req, res) => {
     return res.status(500).json({ error: "Fehler beim Laden des Manga-Eintrags." });
   }
 });
-app.post("/api/manga", async (req, res) => {
+app.post("/api/manga", requireAuth, async (req, res) => {
   const validation = validatePayload(req.body);
   if (validation.error) {
     return res.status(400).json({ error: validation.error });
@@ -751,6 +1753,7 @@ app.post("/api/manga", async (req, res) => {
 
   try {
     const db = await initDb();
+    const user = req.user;
     const {
       title,
       totalVolumes,
@@ -774,6 +1777,7 @@ app.post("/api/manga", async (req, res) => {
     const result = await db.run(
       `
       INSERT INTO mangas (
+        user_id,
         title,
         total_volumes,
         owned_volumes,
@@ -792,9 +1796,10 @@ app.post("/api/manga", async (req, res) => {
         pages,
         release_year
       )
-      VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?)
+      VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?)
       `,
       [
+        user.id,
         title,
         totalVolumes,
         ownedVolumes,
@@ -823,7 +1828,7 @@ app.post("/api/manga", async (req, res) => {
   }
 });
 
-app.put("/api/manga/:id", async (req, res) => {
+app.put("/api/manga/:id", requireAuth, async (req, res) => {
   const validation = validatePayload(req.body);
   if (validation.error) {
     return res.status(400).json({ error: validation.error });
@@ -836,6 +1841,12 @@ app.put("/api/manga/:id", async (req, res) => {
 
   try {
     const db = await initDb();
+    const user = req.user;
+    const existing = await fetchMangaForUser(db, id, user);
+    if (!existing) {
+      return res.status(404).json({ error: "Manga nicht gefunden." });
+    }
+
     const {
       title,
       totalVolumes,
@@ -876,7 +1887,7 @@ app.put("/api/manga/:id", async (req, res) => {
           ratings_count = ?,
           pages = ?,
           release_year = ?
-      WHERE id = ?
+      WHERE id = ? AND user_id = ?
       `,
       [
         title,
@@ -896,7 +1907,8 @@ app.put("/api/manga/:id", async (req, res) => {
         ratingsCount ?? null,
         pages ?? null,
         releaseYear ?? null,
-        id
+        id,
+        user.id
       ]
     );
 
@@ -912,7 +1924,7 @@ app.put("/api/manga/:id", async (req, res) => {
   }
 });
 
-app.patch("/api/manga/:id/volumes", async (req, res) => {
+app.patch("/api/manga/:id/volumes", requireAuth, async (req, res) => {
   const id = parseId(req.params.id);
   if (id === null) {
     return res.status(400).json({ error: "Ungültige ID." });
@@ -925,10 +1937,7 @@ app.patch("/api/manga/:id/volumes", async (req, res) => {
 
   try {
     const db = await initDb();
-    const manga = await db.get(
-      "SELECT id, media_type, owned_volumes, total_volumes, status FROM mangas WHERE id = ?",
-      [id]
-    );
+    const manga = await fetchMangaForUser(db, id, req.user);
 
     if (!manga) {
       return res.status(404).json({ error: "Manga nicht gefunden." });
@@ -976,7 +1985,7 @@ app.patch("/api/manga/:id/volumes", async (req, res) => {
   }
 });
 
-app.patch("/api/manga/:id/missing-volumes", async (req, res) => {
+app.patch("/api/manga/:id/missing-volumes", requireAuth, async (req, res) => {
   const id = parseId(req.params.id);
   if (id === null) {
     return res.status(400).json({ error: "Ungültige ID." });
@@ -984,7 +1993,7 @@ app.patch("/api/manga/:id/missing-volumes", async (req, res) => {
 
   try {
     const db = await initDb();
-    const manga = await db.get("SELECT id, media_type, owned_volumes, total_volumes FROM mangas WHERE id = ?", [id]);
+    const manga = await fetchMangaForUser(db, id, req.user);
 
     if (!manga) {
       return res.status(404).json({ error: "Manga nicht gefunden." });
@@ -1018,7 +2027,42 @@ app.patch("/api/manga/:id/missing-volumes", async (req, res) => {
   }
 });
 
-app.delete("/api/manga/:id", async (req, res) => {
+app.patch("/api/manga/:id/review", requireAuth, async (req, res) => {
+  const id = parseId(req.params.id);
+  if (id === null) {
+    return res.status(400).json({ error: "Ungültige ID." });
+  }
+
+  const validation = validateReviewPayload(req.body);
+  if (validation.error) {
+    return res.status(400).json({ error: validation.error });
+  }
+
+  try {
+    const db = await initDb();
+    const manga = await fetchMangaForUser(db, id, req.user);
+
+    if (!manga) {
+      return res.status(404).json({ error: "Manga nicht gefunden." });
+    }
+
+    const { userRating, userReview } = validation.value;
+    await db.run("UPDATE mangas SET user_rating = ?, user_review = ? WHERE id = ? AND user_id = ?", [
+      userRating,
+      userReview || null,
+      id,
+      req.user.id
+    ]);
+
+    const updated = await db.get("SELECT * FROM mangas WHERE id = ?", [id]);
+    return res.json(normalizeMangaRow(updated));
+  } catch (error) {
+    console.error(error);
+    return res.status(500).json({ error: "Bewertung konnte nicht gespeichert werden." });
+  }
+});
+
+app.delete("/api/manga/:id", requireAuth, async (req, res) => {
   const id = parseId(req.params.id);
   if (id === null) {
     return res.status(400).json({ error: "Ungültige ID." });
@@ -1026,7 +2070,12 @@ app.delete("/api/manga/:id", async (req, res) => {
 
   try {
     const db = await initDb();
-    const result = await db.run("DELETE FROM mangas WHERE id = ?", [id]);
+    const existing = await fetchMangaForUser(db, id, req.user);
+    if (!existing) {
+      return res.status(404).json({ error: "Manga nicht gefunden." });
+    }
+
+    const result = await db.run("DELETE FROM mangas WHERE id = ? AND user_id = ?", [id, req.user.id]);
 
     if (result.changes === 0) {
       return res.status(404).json({ error: "Manga nicht gefunden." });
@@ -1055,6 +2104,30 @@ app.get("/settings", (_req, res) => {
   res.sendFile(path.join(__dirname, "..", "public", "settings.html"));
 });
 
+app.get("/admin", async (req, res) => {
+  try {
+    const user = await getSessionUser(req);
+    if (!user) {
+      return res.redirect("/login");
+    }
+    if (user.role !== "admin") {
+      return res.redirect("/");
+    }
+    return res.sendFile(path.join(__dirname, "..", "public", "admin.html"));
+  } catch (error) {
+    console.error(error);
+    return res.status(500).send("Auth check failed.");
+  }
+});
+
+app.get("/login", (_req, res) => {
+  res.sendFile(path.join(__dirname, "..", "public", "login.html"));
+});
+
+app.get("/register", (_req, res) => {
+  res.sendFile(path.join(__dirname, "..", "public", "register.html"));
+});
+
 app.use((req, res) => {
   if (req.path.startsWith("/api/")) {
     return res.status(404).json({ error: "API-Route nicht gefunden." });
@@ -1075,5 +2148,43 @@ start().catch((error) => {
   console.error("Serverstart fehlgeschlagen:", error);
   process.exit(1);
 });
+
+
+
+
+
+
+
+
+
+
+
+
+
+
+
+
+
+
+
+
+
+
+
+
+
+
+
+
+
+
+
+
+
+
+
+
+
+
 
 

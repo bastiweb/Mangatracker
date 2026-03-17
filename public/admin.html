@@ -1,0 +1,155 @@
+<!DOCTYPE html>
+<html lang="de">
+  <head>
+    <meta charset="UTF-8" />
+    <meta name="viewport" content="width=device-width, initial-scale=1.0" />
+    <title data-i18n="title_admin">Manga Tracker - Admin</title>
+    <link rel="stylesheet" href="/styles.css" />
+    <script src="/i18n.js" defer></script>
+    <script src="/theme.js" defer></script>
+    <script src="/auth.js" defer></script>
+    <script src="/admin.js" defer></script>
+  </head>
+  <body>
+    <header class="topbar">
+      <div class="container topbar-inner">
+        <a class="brand" href="/">Manga Tracker</a>
+        <nav class="nav-links">
+          <a href="/" data-i18n="nav_overview">Übersicht</a>
+          <a href="/create" data-i18n="nav_create">Erfassen</a>
+          <a href="/settings" data-i18n="nav_settings">Settings</a>
+          <a class="active" id="admin-link" href="/admin" data-i18n="nav_admin" hidden>Admin</a>
+        </nav>
+        <div class="user-panel">
+          <span id="user-email" class="muted"></span>
+          <span id="admin-badge" class="badge admin-badge" hidden>Admin</span>
+          <button id="logout-btn" class="secondary" type="button" data-i18n="btn_logout">Logout</button>
+        </div>
+        <button id="lang-toggle" class="secondary" type="button">EN</button>
+        <button id="theme-toggle" class="secondary" type="button" aria-pressed="false">Darkmode</button>
+      </div>
+    </header>
+
+    <main class="container page-grid">
+      <section class="panel admin-panel" id="admin-panel">
+        <div class="section-header">
+          <div>
+            <h1 data-i18n="admin_title">Admin-Einstellungen</h1>
+            <p class="muted" data-i18n="admin_desc">Verwalte Registrierung, Passwörter und Benutzerrollen.</p>
+          </div>
+          <button id="refresh-users" class="secondary" type="button" data-i18n="btn_refresh">Aktualisieren</button>
+        </div>
+
+        <p id="message" class="message" aria-live="polite"></p>
+
+        <div class="admin-filters">
+          <div>
+            <label for="user-search" data-i18n="label_user_search">Suche</label>
+            <input
+              id="user-search"
+              data-i18n-placeholder="placeholder_user_search"
+              placeholder="E-Mail oder Rolle"
+            />
+          </div>
+          <div>
+            <label for="role-filter" data-i18n="label_role_filter">Rolle filtern</label>
+            <select id="role-filter">
+              <option value="all" data-i18n="role_all">Alle Rollen</option>
+              <option value="admin" data-i18n="role_admin">Admin</option>
+              <option value="user" data-i18n="role_user">Nutzer</option>
+            </select>
+          </div>
+          <div>
+            <label for="user-sort" data-i18n="label_user_sort">Sortieren</label>
+            <select id="user-sort">
+              <option value="created_asc" data-i18n="sort_user_created_asc">Erstellt (älteste zuerst)</option>
+              <option value="created_desc" data-i18n="sort_user_created_desc">Erstellt (neueste zuerst)</option>
+              <option value="email_asc" data-i18n="sort_user_email_asc">E-Mail A-Z</option>
+              <option value="email_desc" data-i18n="sort_user_email_desc">E-Mail Z-A</option>
+              <option value="entries_desc" data-i18n="sort_user_entries_desc">Meiste Einträge</option>
+              <option value="sessions_desc" data-i18n="sort_user_sessions_desc">Meiste Sessions</option>
+              <option value="last_login_desc" data-i18n="sort_user_last_login_desc">
+                Letzter Login (neueste zuerst)
+              </option>
+            </select>
+          </div>
+        </div>
+
+        <p id="user-stats" class="muted stats-row" aria-live="polite"></p>
+
+        <div class="toggle-row reset-row">
+          <div>
+            <h2 data-i18n="reset_title">Passwort zurücksetzen</h2>
+            <p class="muted" data-i18n="reset_desc">Setzt das Passwort eines Nutzers neu.</p>
+          </div>
+          <form id="password-reset-form" class="reset-form">
+            <label class="sr-only" for="reset-user">Nutzer</label>
+            <select id="reset-user"></select>
+            <label class="sr-only" for="reset-password">Neues Passwort</label>
+            <input
+              id="reset-password"
+              type="password"
+              placeholder="Neues Passwort"
+              data-i18n-placeholder="reset_placeholder_password"
+              autocomplete="new-password"
+              required
+            />
+            <label class="sr-only" for="reset-password-confirm">Passwort wiederholen</label>
+            <input
+              id="reset-password-confirm"
+              type="password"
+              placeholder="Passwort wiederholen"
+              data-i18n-placeholder="reset_placeholder_confirm"
+              autocomplete="new-password"
+              required
+            />
+            <button type="submit" data-i18n="btn_reset_password">Passwort setzen</button>
+          </form>
+        </div>
+
+        <div class="toggle-row">
+          <div>
+            <h2 data-i18n="registration_title">Registrierung</h2>
+            <p class="muted" data-i18n="registration_desc">Steuert, ob neue Nutzer sich selbst registrieren dürfen.</p>
+          </div>
+          <label class="switch">
+            <input id="registration-toggle" type="checkbox" />
+            <span class="slider"></span>
+          </label>
+        </div>
+
+        <div class="table-wrap">
+          <table class="manga-table user-table">
+            <thead>
+              <tr>
+                <th data-i18n="th_user_email">E-Mail</th>
+                <th data-i18n="th_user_username">Benutzername</th>
+                <th data-i18n="th_user_role">Rolle</th>
+                <th data-i18n="th_user_entries">Einträge</th>
+                <th data-i18n="th_user_sessions">Sessions</th>
+                <th data-i18n="th_user_last_login">Letzter Login</th>
+                <th data-i18n="th_user_created">Erstellt</th>
+                <th data-i18n="th_user_action">Aktion</th>
+              </tr>
+            </thead>
+            <tbody id="user-table-body"></tbody>
+          </table>
+        </div>
+
+        <p id="users-empty" class="muted" hidden data-i18n="users_empty">Keine Nutzer gefunden.</p>
+        <p id="users-message" class="message" aria-live="polite"></p>
+      </section>
+    </main>
+
+    <div id="modal-overlay" class="modal-overlay" hidden>
+      <div class="modal">
+        <h3 data-i18n="modal_reset_title">Passwort wirklich setzen?</h3>
+        <p class="muted" id="modal-text"></p>
+        <div class="actions">
+          <button id="modal-confirm" type="button" data-i18n="btn_confirm">Bestätigen</button>
+          <button id="modal-cancel" class="secondary" type="button" data-i18n="btn_cancel">Abbrechen</button>
+        </div>
+      </div>
+    </div>
+  </body>
+</html>

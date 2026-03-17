@@ -3,9 +3,11 @@
   <head>
     <meta charset="UTF-8" />
     <meta name="viewport" content="width=device-width, initial-scale=1.0" />
-    <title>Manga Tracker - Übersicht</title>
+    <title data-i18n="title_overview">Manga Tracker - Übersicht</title>
     <link rel="stylesheet" href="/styles.css" />
+    <script src="/i18n.js" defer></script>
     <script src="/theme.js" defer></script>
+    <script src="/auth.js" defer></script>
     <script src="/mangas.js" defer></script>
   </head>
   <body>
@@ -13,43 +15,50 @@
       <div class="container topbar-inner">
         <a class="brand" href="/">Manga Tracker</a>
         <nav class="nav-links">
-          <a class="active" href="/">Übersicht</a>
-          <a href="/create">Erfassen</a>
-          <a href="/settings">Settings</a>
+          <a class="active" href="/" data-i18n="nav_overview">Übersicht</a>
+          <a href="/create" data-i18n="nav_create">Erfassen</a>
+          <a href="/settings" data-i18n="nav_settings">Settings</a>
+          <a id="admin-link" href="/admin" data-i18n="nav_admin" hidden>Admin</a>
         </nav>
+        <div class="user-panel">
+          <span id="user-email" class="muted"></span>
+          <span id="admin-badge" class="badge admin-badge" hidden>Admin</span>
+          <button id="logout-btn" class="secondary" type="button" data-i18n="btn_logout">Logout</button>
+        </div>
+        <button id="lang-toggle" class="secondary" type="button">EN</button>
         <button id="theme-toggle" class="secondary" type="button" aria-pressed="false">Darkmode</button>
       </div>
     </header>
 
     <main class="container page-grid">
       <section class="panel">
-        <h1>Bibliothek-Übersicht</h1>
+        <h1 data-i18n="heading_overview">Bibliothek-Übersicht</h1>
 
         <div class="controls">
           <div>
-            <label for="search">Suche</label>
-            <input id="search" placeholder="Titel, Autor oder Notiz" />
+            <label for="search" data-i18n="label_search">Suche</label>
+            <input id="search" data-i18n-placeholder="placeholder_search" placeholder="Titel, Autor oder Notiz" />
           </div>
           <div>
-            <label for="sort">Sortieren</label>
+            <label for="sort" data-i18n="label_sort">Sortieren</label>
             <select id="sort">
-              <option value="updated_desc">Zuletzt geändert (neu zuerst)</option>
-              <option value="title_asc">Titel A-Z</option>
-              <option value="title_desc">Titel Z-A</option>
-              <option value="owned_desc">Meiste vorhandene Bände</option>
-              <option value="owned_asc">Wenigste vorhandene Bände</option>
+              <option value="updated_desc" data-i18n="sort_updated_desc">Zuletzt geändert (neu zuerst)</option>
+              <option value="title_asc" data-i18n="sort_title_asc">Titel A-Z</option>
+              <option value="title_desc" data-i18n="sort_title_desc">Titel Z-A</option>
+              <option value="owned_desc" data-i18n="sort_owned_desc">Meiste vorhandene Bände</option>
+              <option value="owned_asc" data-i18n="sort_owned_asc">Wenigste vorhandene Bände</option>
             </select>
           </div>
           <div>
-            <label for="genre-filter">Genre</label>
+            <label for="genre-filter" data-i18n="label_genre">Genre</label>
             <select id="genre-filter">
-              <option value="all">Alle Genres</option>
+              <option value="all" data-i18n="genre_all">Alle Genres</option>
             </select>
           </div>
         </div>
 
         <div class="list-header">
-          <h2>Deine Einträge</h2>
+          <h2 data-i18n="list_header">Deine Einträge</h2>
           <span id="count">0 Einträge</span>
         </div>
 
@@ -57,20 +66,20 @@
           <table class="manga-table">
             <thead>
               <tr>
-                <th>Cover</th>
-                <th>Titel</th>
-                <th>Typ</th>
-                <th>Autor</th>
-                <th>Bände / Typ</th>
-                <th>Fehlend</th>
-                <th>Aktionen</th>
+                <th data-i18n="th_cover">Cover</th>
+                <th data-i18n="th_title">Titel</th>
+                <th data-i18n="th_type">Typ</th>
+                <th data-i18n="th_author">Autor</th>
+                <th data-i18n="th_volumes">Bände / Typ</th>
+                <th data-i18n="th_missing">Fehlend</th>
+                <th data-i18n="th_actions">Aktionen</th>
               </tr>
             </thead>
             <tbody id="table-body"></tbody>
           </table>
         </div>
 
-        <p id="empty-state" class="muted" hidden>Keine Einträge gefunden.</p>
+        <p id="empty-state" class="muted" hidden data-i18n="empty_state">Keine Einträge gefunden.</p>
         <p id="message" class="message" aria-live="polite"></p>
       </section>
     </main>
@@ -83,6 +92,7 @@
             <strong class="item-title"></strong>
             <span class="badge"></span>
             <p class="cell-note muted"></p>
+            <p class="review-line muted"></p>
             <p class="meta-line muted"></p>
             <div class="chip-row"></div>
           </div>
@@ -93,6 +103,7 @@
         <td class="missing-line"></td>
         <td>
           <div class="quick-actions">
+            <button data-action="review" class="secondary" type="button">Bewerten</button>
             <a data-action="edit" class="button-link secondary" href="#">Bearbeiten</a>
             <button data-action="delete" class="danger">Löschen</button>
           </div>
@@ -100,7 +111,31 @@
         </td>
       </tr>
     </template>
+
+    <div id="review-modal" class="modal-overlay" hidden>
+      <div class="modal">
+        <h3 id="review-title" data-i18n="review_title">Bewertung</h3>
+        <div class="star-row" id="review-stars">
+          <button class="star-button" type="button" data-rating="1">★</button>
+          <button class="star-button" type="button" data-rating="2">★</button>
+          <button class="star-button" type="button" data-rating="3">★</button>
+          <button class="star-button" type="button" data-rating="4">★</button>
+          <button class="star-button" type="button" data-rating="5">★</button>
+        </div>
+        <p class="muted" id="review-hint" data-i18n="review_hint">Bewertung auswählen (1-5 Sterne).</p>
+
+        <label for="review-text" data-i18n="review_label">Deine Rezension (optional)</label>
+        <textarea id="review-text" rows="4" maxlength="1200"></textarea>
+
+        <div class="actions">
+          <button id="review-save" type="button" data-i18n="btn_save">Speichern</button>
+          <button id="review-clear" class="secondary" type="button" data-i18n="btn_review_clear">Bewertung löschen</button>
+          <button id="review-cancel" class="secondary" type="button" data-i18n="btn_cancel">Abbrechen</button>
+        </div>
+      </div>
+    </div>
   </body>
 </html>
+
 
 

@@ -3,9 +3,11 @@
   <head>
     <meta charset="UTF-8" />
     <meta name="viewport" content="width=device-width, initial-scale=1.0" />
-    <title>Manga Tracker - Settings</title>
+    <title data-i18n="title_settings">Manga Tracker - Settings</title>
     <link rel="stylesheet" href="/styles.css" />
+    <script src="/i18n.js" defer></script>
     <script src="/theme.js" defer></script>
+    <script src="/auth.js" defer></script>
     <script src="/settings.js" defer></script>
   </head>
   <body>
@@ -13,35 +15,82 @@
       <div class="container topbar-inner">
         <a class="brand" href="/">Manga Tracker</a>
         <nav class="nav-links">
-          <a href="/">Übersicht</a>
-          <a href="/create">Erfassen</a>
-          <a class="active" href="/settings">Settings</a>
+          <a href="/" data-i18n="nav_overview">Übersicht</a>
+          <a href="/create" data-i18n="nav_create">Erfassen</a>
+          <a class="active" href="/settings" data-i18n="nav_settings">Settings</a>
+          <a id="admin-link" href="/admin" data-i18n="nav_admin" hidden>Admin</a>
         </nav>
+        <div class="user-panel">
+          <span id="user-email" class="muted"></span>
+          <span id="admin-badge" class="badge admin-badge" hidden>Admin</span>
+          <button id="logout-btn" class="secondary" type="button" data-i18n="btn_logout">Logout</button>
+        </div>
+        <button id="lang-toggle" class="secondary" type="button">EN</button>
         <button id="theme-toggle" class="secondary" type="button" aria-pressed="false">Darkmode</button>
       </div>
     </header>
 
     <main class="container page-grid">
       <section class="panel">
-        <h1>Settings</h1>
-        <p class="muted">
+        <h2 data-i18n="profile_title">Profil</h2>
+        <p class="muted" data-i18n="profile_desc">Aktualisiere deinen Benutzernamen.</p>
+        <form id="profile-form">
+          <label for="profile-username" data-i18n="label_username">Benutzername</label>
+          <input id="profile-username" type="text" autocomplete="username" />
+          <div class="actions">
+            <button type="submit" data-i18n="btn_profile_save">Speichern</button>
+          </div>
+        </form>
+        <p id="profile-message" class="message" aria-live="polite"></p>
+      </section>
+
+      <section class="panel">
+        <h1 data-i18n="heading_settings">Settings</h1>
+        <p class="muted" data-i18n="settings_token_desc">
           Hinterlege hier deinen Hardcover API Token. Er wird serverseitig in der Datenbank gespeichert und für
           Hardcover-Suchen verwendet.
         </p>
 
         <form id="token-form">
-          <label for="token">Hardcover API Token</label>
+          <label for="token" data-i18n="label_token">Hardcover API Token</label>
           <input id="token" type="password" placeholder="Token einfügen" autocomplete="off" />
 
           <div class="actions">
-            <button type="submit">Token speichern</button>
-            <button id="clear-token-btn" class="secondary" type="button">Token entfernen</button>
+            <button type="submit" data-i18n="btn_token_save">Token speichern</button>
+            <button id="clear-token-btn" class="secondary" type="button" data-i18n="btn_token_clear">
+              Token entfernen
+            </button>
           </div>
         </form>
 
         <p id="token-status" class="muted"></p>
         <p id="message" class="message" aria-live="polite"></p>
       </section>
+
+      <section class="panel">
+        <h2 data-i18n="export_title">Datenexport</h2>
+        <p class="muted" data-i18n="export_desc">Exportiere deine Übersicht als CSV-Datei.</p>
+        <div class="actions">
+          <button id="export-csv-btn" type="button" data-i18n="btn_export">CSV exportieren</button>
+        </div>
+        <p id="export-message" class="message" aria-live="polite"></p>
+      </section>
+
+      <section class="panel">
+        <h2 data-i18n="import_title">Datenimport</h2>
+        <p class="muted" data-i18n="import_desc">Importiere eine zuvor exportierte CSV-Datei in deine Übersicht.</p>
+        <div class="actions">
+          <input id="import-file" type="file" accept=".csv,text/csv" />
+          <button id="preview-csv-btn" class="secondary" type="button" data-i18n="btn_preview">CSV prüfen</button>
+          <button id="import-csv-btn" type="button" data-i18n="btn_import">CSV importieren</button>
+        </div>
+        <p class="muted" data-i18n="import_hint">
+          Hinweis: Der Import legt neue Einträge an. Dubletten werden automatisch übersprungen (Titel + Typ).
+        </p>
+        <p id="import-message" class="message" aria-live="polite"></p>
+      </section>
+
     </main>
   </body>
 </html>
+

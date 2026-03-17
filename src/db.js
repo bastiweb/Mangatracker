@@ -1,13 +1,65 @@
 const fs = require("fs");
 const path = require("path");
-const Database = require("better-sqlite3");
+const Database = require("better-sqlite3-multiple-ciphers");
 
 const DB_FILE = process.env.DB_FILE || path.join(__dirname, "..", "data", "manga.db");
+const DB_ENCRYPTION_KEY = String(process.env.DB_ENCRYPTION_KEY || "");
 
 let db;
 
+function escapePragmaValue(value) {
+  return String(value).replace(/'/g, "''");
+}
+
+function openEncryptedDatabase(filename, key) {
+  const fileExists = fs.existsSync(filename) && fs.statSync(filename).size > 0;
+  const escapedKey = escapePragmaValue(key);
+
+  const applyKey = (rawDb) => {
+    rawDb.pragma(`key = '${escapedKey}'`);
+  };
+
+  const verifyDatabase = (rawDb) => {
+    rawDb.prepare("SELECT name FROM sqlite_master LIMIT 1").get();
+  };
+
+  let raw = new Database(filename);
+
+  try {
+    applyKey(raw);
+    verifyDatabase(raw);
+    return raw;
+  } catch (error) {
+    if (!fileExists) {
+      raw.close();
+      throw error;
+    }
+
+    raw.close();
+
+    const plain = new Database(filename);
+    try {
+      verifyDatabase(plain);
+      plain.pragma(`rekey = '${escapedKey}'`);
+      plain.close();
+    } catch (rekeyError) {
+      plain.close();
+      throw rekeyError;
+    }
+
+    const reopened = new Database(filename);
+    applyKey(reopened);
+    verifyDatabase(reopened);
+    return reopened;
+  }
+}
+
 function createDb(filename) {
-  const raw = new Database(filename);
+  if (!DB_ENCRYPTION_KEY) {
+    throw new Error("DB_ENCRYPTION_KEY fehlt. Die Datenbank muss verschlüsselt betrieben werden.");
+  }
+
+  const raw = openEncryptedDatabase(filename, DB_ENCRYPTION_KEY);
 
   return {
     exec(sql) {
@@ -68,6 +120,26 @@ async function initDb() {
       CHECK (status IN ('Geplant', 'Sammle', 'Pausiert', 'Abgeschlossen'))
     );
 
+    CREATE TABLE IF NOT EXISTS users (
+      id INTEGER PRIMARY KEY AUTOINCREMENT,
+      email TEXT NOT NULL UNIQUE,
+      username TEXT,
+      password_hash TEXT NOT NULL,
+      role TEXT NOT NULL DEFAULT 'user',
+      created_at TEXT NOT NULL DEFAULT CURRENT_TIMESTAMP
+    );
+
+    CREATE TABLE IF NOT EXISTS sessions (
+      id INTEGER PRIMARY KEY AUTOINCREMENT,
+      user_id INTEGER NOT NULL,
+      token_hash TEXT NOT NULL,
+      created_at TEXT NOT NULL DEFAULT CURRENT_TIMESTAMP,
+      expires_at INTEGER NOT NULL,
+      FOREIGN KEY(user_id) REFERENCES users(id) ON DELETE CASCADE
+    );
+
+    CREATE INDEX IF NOT EXISTS idx_sessions_token_hash ON sessions(token_hash);
+
     CREATE TABLE IF NOT EXISTS settings (
       key TEXT PRIMARY KEY,
       value TEXT
@@ -95,6 +167,10 @@ async function initDb() {
   await ensureColumn("mangas", "ratings_count", "ratings_count INTEGER");
   await ensureColumn("mangas", "pages", "pages INTEGER");
   await ensureColumn("mangas", "release_year", "release_year INTEGER");
+  await ensureColumn("mangas", "user_rating", "user_rating INTEGER");
+  await ensureColumn("mangas", "user_review", "user_review TEXT");
+  await ensureColumn("mangas", "user_id", "user_id INTEGER");
+  await ensureColumn("users", "username", "username TEXT");
 
   await db.run("UPDATE mangas SET media_type = LOWER(TRIM(media_type)) WHERE media_type IS NOT NULL");
   await db.run(
@@ -112,6 +188,12 @@ async function initDb() {
   await db.run(
     "UPDATE mangas SET missing_volumes = '[]' WHERE missing_volumes IS NULL OR TRIM(missing_volumes) = ''"
   );
+
+  await db.run("UPDATE users SET username = TRIM(username) WHERE username IS NOT NULL");
+  await db.run(
+    "UPDATE users SET username = SUBSTR(email, 1, INSTR(email, '@') - 1) WHERE (username IS NULL OR TRIM(username) = '') AND email IS NOT NULL AND INSTR(email, '@') > 1"
+  );
+  await db.run("UPDATE users SET email = LOWER(TRIM(email)) WHERE email IS NOT NULL");
 
   return db;
 }

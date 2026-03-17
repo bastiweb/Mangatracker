@@ -3,9 +3,11 @@
   <head>
     <meta charset="UTF-8" />
     <meta name="viewport" content="width=device-width, initial-scale=1.0" />
-    <title>Manga Tracker - Erfassung</title>
+    <title data-i18n="title_create">Manga Tracker - Erfassung</title>
     <link rel="stylesheet" href="/styles.css" />
+    <script src="/i18n.js" defer></script>
     <script src="/theme.js" defer></script>
+    <script src="/auth.js" defer></script>
     <script src="/create.js" defer></script>
   </head>
   <body>
@@ -13,85 +15,97 @@
       <div class="container topbar-inner">
         <a class="brand" href="/">Manga Tracker</a>
         <nav class="nav-links">
-          <a href="/">Übersicht</a>
-          <a class="active" href="/create">Erfassen</a>
-          <a href="/settings">Settings</a>
+          <a href="/" data-i18n="nav_overview">Übersicht</a>
+          <a class="active" href="/create" data-i18n="nav_create">Erfassen</a>
+          <a href="/settings" data-i18n="nav_settings">Settings</a>
+          <a id="admin-link" href="/admin" data-i18n="nav_admin" hidden>Admin</a>
         </nav>
+        <div class="user-panel">
+          <span id="user-email" class="muted"></span>
+          <span id="admin-badge" class="badge admin-badge" hidden>Admin</span>
+          <button id="logout-btn" class="secondary" type="button" data-i18n="btn_logout">Logout</button>
+        </div>
+        <button id="lang-toggle" class="secondary" type="button">EN</button>
         <button id="theme-toggle" class="secondary" type="button" aria-pressed="false">Darkmode</button>
       </div>
     </header>
 
     <main class="container page-grid">
       <section class="panel">
-        <h1 id="form-title">Neue Manga-Serie anlegen</h1>
+        <h1 id="form-title" data-i18n="heading_new_manga">Neue Manga-Serie anlegen</h1>
         <form id="manga-form">
           <input type="hidden" id="manga-id" />
 
-          <label for="title">Titel</label>
+          <label for="title" data-i18n="label_title">Titel</label>
           <input id="title" name="title" required maxlength="120" />
 
           <label class="checkbox-inline" for="isBook">
             <input id="isBook" name="isBook" type="checkbox" />
-            <span>Als Buch speichern (ohne Band-Tracking)</span>
+            <span data-i18n="label_is_book">Als Buch speichern (ohne Band-Tracking)</span>
           </label>
 
           <div id="volume-fields" class="grid-2">
             <div>
-              <label for="ownedVolumes">Vorhandene Bände</label>
+              <label for="ownedVolumes" data-i18n="label_owned">Vorhandene Bände</label>
               <input id="ownedVolumes" name="ownedVolumes" type="number" min="0" required value="0" />
             </div>
             <div>
-              <label for="totalVolumes">Gesamtzahl Bände (optional)</label>
+              <label for="totalVolumes" data-i18n="label_total">Gesamtzahl Bände (optional)</label>
               <input id="totalVolumes" name="totalVolumes" type="number" min="0" />
             </div>
           </div>
 
-          <label for="status">Status</label>
+          <label for="status" data-i18n="label_status">Status</label>
           <select id="status" name="status">
-            <option value="Geplant">Geplant</option>
-            <option value="Sammle" selected>Sammle</option>
-            <option value="Pausiert">Pausiert</option>
-            <option value="Abgeschlossen">Abgeschlossen</option>
+            <option value="Geplant" data-i18n="status_planned">Geplant</option>
+            <option value="Sammle" selected data-i18n="status_collecting">Sammle</option>
+            <option value="Pausiert" data-i18n="status_paused">Pausiert</option>
+            <option value="Abgeschlossen" data-i18n="status_completed">Abgeschlossen</option>
           </select>
 
-          <label for="notes">Notizen</label>
+          <label for="notes" data-i18n="label_notes">Notizen</label>
           <textarea id="notes" name="notes" rows="4" maxlength="600"></textarea>
 
           <section class="embedded-section">
             <div class="embedded-header">
-              <h2>Hardcover-Verknüpfung</h2>
-              <small>Suche nach Titel/Autor und wähle den passenden Treffer.</small>
+              <h2 data-i18n="hardcover_heading">Hardcover-Verknüpfung</h2>
+              <small data-i18n="hardcover_subtitle">Suche nach Titel/Autor und wähle den passenden Treffer.</small>
             </div>
 
             <div class="search-row">
-              <input id="hardcover-query" placeholder="z. B. One Piece" />
-              <button id="hardcover-search-btn" type="button">Hardcover suchen</button>
+              <input id="hardcover-query" data-i18n-placeholder="placeholder_hardcover" placeholder="z. B. One Piece" />
+              <button id="hardcover-search-btn" type="button" data-i18n="btn_hardcover_search">Hardcover suchen</button>
             </div>
 
             <div id="hardcover-results" class="hardcover-results"></div>
 
-            <div id="selected-hardcover" class="selected-hardcover empty">
+            <div id="selected-hardcover" class="selected-hardcover empty" data-i18n="hardcover_empty">
               Noch keine Hardcover-Verknüpfung ausgewählt.
             </div>
 
             <div class="actions">
-              <button id="clear-hardcover-btn" class="secondary" type="button">Verknüpfung entfernen</button>
+              <button id="clear-hardcover-btn" class="secondary" type="button" data-i18n="btn_clear_link">
+                Verknüpfung entfernen
+              </button>
             </div>
           </section>
 
           <div class="actions">
-            <button id="save-btn" type="submit">Speichern</button>
-            <button id="cancel-edit-btn" class="secondary" type="button" hidden>Bearbeitung abbrechen</button>
+            <button id="save-btn" type="submit" data-i18n="btn_save">Speichern</button>
+            <button id="cancel-edit-btn" class="secondary" type="button" hidden data-i18n="btn_cancel_edit">
+              Bearbeitung abbrechen
+            </button>
           </div>
         </form>
         <p id="message" class="message" aria-live="polite"></p>
       </section>
 
       <section class="panel">
-        <h2>Schnellzugriff</h2>
-        <p class="muted">Zur Übersicht mit Suche, Sortierung und Filterung:</p>
-        <a class="button-link" href="/">Zur Übersicht</a>
+        <h2 data-i18n="quick_access_title">Schnellzugriff</h2>
+        <p class="muted" data-i18n="quick_access_desc">Zur Übersicht mit Suche, Sortierung und Filterung:</p>
+        <a class="button-link" href="/" data-i18n="quick_access_link">Zur Übersicht</a>
       </section>
     </main>
   </body>
 </html>
+

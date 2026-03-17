@@ -1,0 +1,62 @@
+<!DOCTYPE html>
+<html lang="de">
+  <head>
+    <meta charset="UTF-8" />
+    <meta name="viewport" content="width=device-width, initial-scale=1.0" />
+    <title data-i18n="title_register">Manga Tracker - Registrierung</title>
+    <link rel="stylesheet" href="/styles.css" />
+    <script src="/i18n.js" defer></script>
+    <script src="/theme.js" defer></script>
+    <script src="/register.js" defer></script>
+  </head>
+  <body>
+    <header class="topbar">
+      <div class="container topbar-inner">
+        <a class="brand" href="/">Manga Tracker</a>
+        <div class="spacer"></div>
+        <button id="lang-toggle" class="secondary" type="button">EN</button>
+        <button id="theme-toggle" class="secondary" type="button" aria-pressed="false">Darkmode</button>
+      </div>
+    </header>
+
+    <main class="container page-grid">
+      <section class="panel auth-panel">
+        <h1 data-i18n="heading_register">Registrierung</h1>
+        <form id="register-form">
+          <label for="email" data-i18n="label_email">E-Mail</label>
+          <input id="email" name="email" type="email" autocomplete="email" required />
+
+          <label for="username" data-i18n="label_username">Benutzername</label>
+          <input id="username" name="username" type="text" autocomplete="username" required />
+
+          <label for="password" data-i18n="label_password">Passwort</label>
+          <input id="password" name="password" type="password" autocomplete="new-password" required />
+
+          <label for="passwordConfirm" data-i18n="label_password_confirm">Passwort wiederholen</label>
+          <input
+            id="passwordConfirm"
+            name="passwordConfirm"
+            type="password"
+            autocomplete="new-password"
+            required
+          />
+
+          <div id="role-field" hidden>
+            <label for="role" data-i18n="label_role">Rolle</label>
+            <select id="role" name="role">
+              <option value="user" selected data-i18n="role_user">Nutzer</option>
+              <option value="admin" data-i18n="role_admin">Admin</option>
+            </select>
+          </div>
+
+          <div class="actions">
+            <button type="submit" data-i18n="btn_register">Registrieren</button>
+            <a class="button-link secondary" href="/login" data-i18n="back_login">Zurück zum Login</a>
+          </div>
+        </form>
+
+        <p id="message" class="message" aria-live="polite"></p>
+      </section>
+    </main>
+  </body>
+</html>
