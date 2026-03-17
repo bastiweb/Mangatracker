@@ -123,6 +123,7 @@ async function initDb() {
     CREATE TABLE IF NOT EXISTS users (
       id INTEGER PRIMARY KEY AUTOINCREMENT,
       email TEXT NOT NULL UNIQUE,
+      username TEXT,
       password_hash TEXT NOT NULL,
       role TEXT NOT NULL DEFAULT 'user',
       created_at TEXT NOT NULL DEFAULT CURRENT_TIMESTAMP
@@ -169,6 +170,7 @@ async function initDb() {
   await ensureColumn("mangas", "user_rating", "user_rating INTEGER");
   await ensureColumn("mangas", "user_review", "user_review TEXT");
   await ensureColumn("mangas", "user_id", "user_id INTEGER");
+  await ensureColumn("users", "username", "username TEXT");
 
   await db.run("UPDATE mangas SET media_type = LOWER(TRIM(media_type)) WHERE media_type IS NOT NULL");
   await db.run(
@@ -187,6 +189,10 @@ async function initDb() {
     "UPDATE mangas SET missing_volumes = '[]' WHERE missing_volumes IS NULL OR TRIM(missing_volumes) = ''"
   );
 
+  await db.run("UPDATE users SET username = TRIM(username) WHERE username IS NOT NULL");
+  await db.run(
+    "UPDATE users SET username = SUBSTR(email, 1, INSTR(email, '@') - 1) WHERE (username IS NULL OR TRIM(username) = '') AND email IS NOT NULL AND INSTR(email, '@') > 1"
+  );
   await db.run("UPDATE users SET email = LOWER(TRIM(email)) WHERE email IS NOT NULL");
 
   return db;

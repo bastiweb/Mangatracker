@@ -9,6 +9,10 @@ const selectedHardcover = document.getElementById("selected-hardcover");
 const clearHardcoverBtn = document.getElementById("clear-hardcover-btn");
 const volumeFields = document.getElementById("volume-fields");
 
+const t = (key, vars) => (window.MangaI18n && window.MangaI18n.t ? window.MangaI18n.t(key, vars) : key);
+const STATUS_COMPLETED = "Abgeschlossen";
+const STATUS_COLLECTING = "Sammle";
+
 const fields = {
   id: document.getElementById("manga-id"),
   title: document.getElementById("title"),
@@ -40,7 +44,8 @@ const state = {
   missingVolumes: [],
   autoFillQueryFromTitle: true,
   autoSearchTimer: null,
-  lastAutoQuery: ""
+  lastAutoQuery: "",
+  lastResults: []
 };
 
 function setMessage(text, isError = false) {
@@ -138,15 +143,15 @@ function getMediaType() {
 }
 
 function updateFormTitle() {
-  const mediaLabel = getMediaType() === "book" ? "Buch" : "Manga-Serie";
+  const mediaLabel = getMediaType() === "book" ? t("label_book") : t("media_manga_series");
   const titleValue = fields.title.value.trim();
 
   if (state.editingId === null) {
-    formTitle.textContent = getMediaType() === "book" ? "Neues Buch anlegen" : "Neue Manga-Serie anlegen";
+    formTitle.textContent = getMediaType() === "book" ? t("heading_new_book") : t("heading_new_manga");
     return;
   }
 
-  formTitle.textContent = `${mediaLabel} bearbeiten: ${titleValue || "Eintrag"}`;
+  formTitle.textContent = `${mediaLabel} ${t("label_edit")}: ${titleValue || t("label_entry")}`;
 }
 
 function applyMediaTypeUi() {
@@ -170,7 +175,7 @@ function applyMediaTypeUi() {
 
 function updateStatusForCompletion() {
   if (getMediaType() === "book") {
-    fields.status.value = "Abgeschlossen";
+    fields.status.value = STATUS_COMPLETED;
     return;
   }
 
@@ -178,7 +183,7 @@ function updateStatusForCompletion() {
   const total = Number(fields.totalVolumes.value);
 
   if (Number.isInteger(owned) && Number.isInteger(total) && total > 0 && owned === total) {
-    fields.status.value = "Abgeschlossen";
+    fields.status.value = STATUS_COMPLETED;
   }
 }
 
@@ -217,7 +222,7 @@ function syncHardcoverQueryFromTitle(force = false) {
 function updateSelectedHardcoverView() {
   if (!state.selectedHardcover) {
     selectedHardcover.className = "selected-hardcover empty";
-    selectedHardcover.innerHTML = "Noch keine Hardcover-Verknüpfung ausgewählt.";
+    selectedHardcover.innerHTML = t("hardcover_empty");
     return;
   }
 
@@ -227,8 +232,8 @@ function updateSelectedHardcoverView() {
     ${getCoverMarkup(selected.imageUrl, selected.title)}
     <div>
       <strong>${escapeHtml(selected.title)}</strong>
-      <p class="muted">Autor: ${escapeHtml(selected.authorName || "Unbekannt")}</p>
-      <p class="muted">Hardcover-ID: ${escapeHtml(selected.id)}</p>
+      <p class="muted">${t("label_author")}: ${escapeHtml(selected.authorName || t("label_author_unknown"))}</p>
+      <p class="muted">${t("label_hardcover_id")}: ${escapeHtml(selected.id)}</p>
     </div>
   `;
 }
@@ -237,7 +242,7 @@ function renderHardcoverResults(results) {
   hardcoverResults.innerHTML = "";
 
   if (!results.length) {
-    hardcoverResults.innerHTML = "<p class=\"muted\">Keine passenden Treffer gefunden.</p>";
+    hardcoverResults.innerHTML = `<p class=\"muted\">${t("msg_no_results")}</p>`;
     return;
   }
 
@@ -254,11 +259,11 @@ function renderHardcoverResults(results) {
       ${getCoverMarkup(entry.imageUrl, entry.title)}
       <div>
         <h4>${escapeHtml(entry.title)}</h4>
-        ${showSeries ? `<p class="muted">Serie: ${escapeHtml(seriesTitle)}</p>` : ""}
-        <p>${escapeHtml(authorName || "Autor unbekannt")}</p>
+        ${showSeries ? `<p class="muted">${t("label_series")}: ${escapeHtml(seriesTitle)}</p>` : ""}
+        <p>${escapeHtml(authorName || t("label_author_unknown"))}</p>
       </div>
       <div class="actions">
-        <button type="button">Auswählen</button>
+        <button type="button">${t("btn_select")}</button>
       </div>
     `;
 
@@ -293,7 +298,7 @@ function renderHardcoverResults(results) {
       };
       updateSelectedHardcoverView();
       updateStatusForCompletion();
-      setMessage("Hardcover-Verknüpfung übernommen.");
+      setMessage(t("msg_link_applied"));
     });
 
     hardcoverResults.appendChild(node);
@@ -312,7 +317,7 @@ async function runHardcoverSearch(forcedQuery = "", options = {}) {
   const query = (hardcoverQuery.value || fields.title.value).trim();
   if (!query) {
     if (!silent) {
-      setMessage("Bitte Titel oder Suchbegriff eingeben.", true);
+      setMessage(t("msg_title_required"), true);
     }
     return;
   }
@@ -320,7 +325,7 @@ async function runHardcoverSearch(forcedQuery = "", options = {}) {
   hardcoverQuery.value = query;
   hardcoverSearchBtn.disabled = true;
   if (!silent) {
-    setMessage("Suche Hardcover...", false);
+    setMessage(t("msg_searching"), false);
   }
 
   try {
@@ -335,15 +340,16 @@ async function runHardcoverSearch(forcedQuery = "", options = {}) {
 
       throw new Error(
         detailMessage
-          ? `${data.error || "Hardcover-Suche fehlgeschlagen."} (${detailMessage})`
-          : data.error || "Hardcover-Suche fehlgeschlagen."
+          ? `${data.error || t("msg_hardcover_failed")} (${detailMessage})`
+          : data.error || t("msg_hardcover_failed")
       );
     }
 
     const preparedResults = prepareHardcoverResults(Array.isArray(data.results) ? data.results : [], query);
+    state.lastResults = preparedResults;
     renderHardcoverResults(preparedResults);
     if (!silent) {
-      setMessage("Hardcover-Ergebnisse geladen.");
+      setMessage(t("msg_search_loaded"));
     }
   } catch (error) {
     setMessage(error.message, true);
@@ -358,12 +364,13 @@ function resetForm() {
   fields.isBook.checked = false;
   fields.ownedVolumes.value = "0";
   fields.totalVolumes.value = "";
-  fields.status.value = "Sammle";
+  fields.status.value = STATUS_COLLECTING;
   state.editingId = null;
   state.selectedHardcover = null;
   state.missingVolumes = [];
   state.autoFillQueryFromTitle = true;
   state.lastAutoQuery = "";
+  state.lastResults = [];
   if (state.autoSearchTimer) {
     window.clearTimeout(state.autoSearchTimer);
     state.autoSearchTimer = null;
@@ -438,11 +445,11 @@ async function loadEditModeIfRequested() {
     const data = await response.json().catch(() => ({}));
 
     if (!response.ok) {
-      throw new Error(data.error || "Serie konnte nicht geladen werden.");
+      throw new Error(data.error || t("msg_load_failed"));
     }
 
     fillFormFromManga(data);
-    setMessage("Bearbeitungsmodus aktiv.");
+    setMessage(t("msg_edit_mode"));
   } catch (error) {
     applyMediaTypeUi();
     syncHardcoverQueryFromTitle(true);
@@ -489,11 +496,11 @@ form.addEventListener("submit", async (event) => {
     const data = await response.json().catch(() => ({}));
 
     if (!response.ok) {
-      throw new Error(data.error || "Speichern fehlgeschlagen.");
+      throw new Error(data.error || t("msg_save_failed"));
     }
 
     if (isEdit) {
-      setMessage("Eintrag aktualisiert. Weiterleitung zur Übersicht...");
+      setMessage(t("msg_updated_redirect"));
       window.setTimeout(() => {
         window.location.href = "/";
       }, 450);
@@ -501,7 +508,7 @@ form.addEventListener("submit", async (event) => {
     }
 
     resetForm();
-    setMessage("Eintrag gespeichert.");
+    setMessage(t("msg_saved"));
   } catch (error) {
     setMessage(error.message, true);
   }
@@ -543,11 +550,19 @@ fields.totalVolumes.addEventListener("input", () => {
 clearHardcoverBtn.addEventListener("click", () => {
   state.selectedHardcover = null;
   updateSelectedHardcoverView();
-  setMessage("Hardcover-Verknüpfung entfernt.");
+  setMessage(t("msg_link_removed"));
 });
 
 cancelEditBtn.addEventListener("click", () => {
   window.location.href = "/";
+});
+
+window.addEventListener("manga-i18n:change", () => {
+  updateFormTitle();
+  updateSelectedHardcoverView();
+  if (hardcoverResults && hardcoverResults.childElementCount > 0) {
+    renderHardcoverResults(state.lastResults);
+  }
 });
 
 MangaTheme.init();

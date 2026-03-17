@@ -1,0 +1,597 @@
+(function initializeI18nModule() {
+  const LANG_KEY = "manga_tracker_lang";
+  const SUPPORTED = ["de", "en"];
+
+  const DICT = {
+    de: {
+      nav_overview: "Übersicht",
+      nav_create: "Erfassen",
+      nav_settings: "Settings",
+      nav_admin: "Admin",
+      nav_login: "Login",
+      nav_register: "Registrieren",
+      btn_logout: "Logout",
+      theme_dark: "Darkmode",
+      theme_light: "Lightmode",
+      lang_to_en: "Auf Englisch umstellen",
+      lang_to_de: "Auf Deutsch umstellen",
+      title_overview: "Manga Tracker - Übersicht",
+      heading_overview: "Bibliothek-Übersicht",
+      label_search: "Suche",
+      placeholder_search: "Titel, Autor oder Notiz",
+      label_book: "Buch",
+      label_manga: "Manga",
+      label_book_single: "Einzelbuch",
+      media_manga_series: "Manga-Serie",
+      label_edit: "bearbeiten",
+      label_entry: "Eintrag",
+      label_sort: "Sortieren",
+      sort_updated_desc: "Zuletzt geändert (neu zuerst)",
+      sort_title_asc: "Titel A-Z",
+      sort_title_desc: "Titel Z-A",
+      sort_owned_desc: "Meiste vorhandene Bände",
+      sort_owned_asc: "Wenigste vorhandene Bände",
+      label_genre: "Genre",
+      genre_all: "Alle Genres",
+      label_genres: "Genres",
+      label_moods: "Stimmungen",
+      label_warnings: "Warnungen",
+      list_header: "Deine Einträge",
+      count_entry_singular: "Eintrag",
+      count_entry_plural: "Einträge",
+      th_cover: "Cover",
+      th_title: "Titel",
+      th_type: "Typ",
+      th_author: "Autor",
+      th_volumes: "Bände / Typ",
+      th_missing: "Fehlend",
+      th_actions: "Aktionen",
+      empty_state: "Keine Einträge gefunden.",
+      btn_review: "Bewerten",
+      btn_edit: "Bearbeiten",
+      btn_delete: "Löschen",
+      review_title: "Bewertung",
+      review_title_with: "Bewertung: {title}",
+      review_hint: "Bewertung auswählen (1-5 Sterne).",
+      review_label: "Deine Rezension (optional)",
+      btn_save: "Speichern",
+      btn_review_clear: "Bewertung löschen",
+      btn_cancel: "Abbrechen",
+      title_create: "Manga Tracker - Erfassung",
+      heading_new_manga: "Neue Manga-Serie anlegen",
+      heading_new_book: "Neues Buch anlegen",
+      label_title: "Titel",
+      label_is_book: "Als Buch speichern (ohne Band-Tracking)",
+      label_owned: "Vorhandene Bände",
+      label_total: "Gesamtzahl Bände (optional)",
+      label_status: "Status",
+      status_planned: "Geplant",
+      status_collecting: "Sammle",
+      status_paused: "Pausiert",
+      status_completed: "Abgeschlossen",
+      label_notes: "Notizen",
+      hardcover_heading: "Hardcover-Verknüpfung",
+      hardcover_subtitle: "Suche nach Titel/Autor und wähle den passenden Treffer.",
+      placeholder_hardcover: "z. B. One Piece",
+      btn_hardcover_search: "Hardcover suchen",
+      hardcover_empty: "Noch keine Hardcover-Verknüpfung ausgewählt.",
+      btn_clear_link: "Verknüpfung entfernen",
+      btn_cancel_edit: "Bearbeitung abbrechen",
+      quick_access_title: "Schnellzugriff",
+      quick_access_desc: "Zur Übersicht mit Suche, Sortierung und Filterung:",
+      quick_access_link: "Zur Übersicht",
+      title_settings: "Manga Tracker - Settings",
+      title_admin: "Manga Tracker - Admin",
+      heading_settings: "Settings",
+      heading_admin: "Admin",
+      profile_title: "Profil",
+      profile_desc: "Aktualisiere deinen Benutzernamen.",
+      btn_profile_save: "Speichern",
+      settings_token_desc: "Hinterlege hier deinen Hardcover API Token. Er wird serverseitig in der Datenbank gespeichert und für Hardcover-Suchen verwendet.",
+      label_token: "Hardcover API Token",
+      btn_token_save: "Token speichern",
+      btn_token_clear: "Token entfernen",
+      export_title: "Datenexport",
+      export_desc: "Exportiere deine Übersicht als CSV-Datei.",
+      btn_export: "CSV exportieren",
+      import_title: "Datenimport",
+      import_desc: "Importiere eine zuvor exportierte CSV-Datei in deine Übersicht.",
+      btn_preview: "CSV prüfen",
+      btn_import: "CSV importieren",
+      import_hint: "Hinweis: Der Import legt neue Einträge an. Dubletten werden automatisch übersprungen (Titel + Typ).",
+      admin_title: "Admin-Einstellungen",
+      admin_desc: "Verwalte Registrierung, Passwörter und Benutzerrollen.",
+      btn_refresh: "Aktualisieren",
+      reset_title: "Passwort zurücksetzen",
+      reset_desc: "Setzt das Passwort eines Nutzers neu.",
+      reset_placeholder_password: "Neues Passwort",
+      reset_placeholder_confirm: "Passwort wiederholen",
+      btn_reset_password: "Passwort setzen",
+      registration_title: "Registrierung",
+      registration_desc: "Steuert, ob neue Nutzer sich selbst registrieren dürfen.",
+      th_user_email: "E-Mail",
+      th_user_username: "Benutzername",
+      th_user_role: "Rolle",
+      th_user_entries: "Einträge",
+      th_user_sessions: "Sessions",
+      th_user_last_login: "Letzter Login",
+      th_user_created: "Erstellt",
+      th_user_action: "Aktion",
+      users_empty: "Keine Nutzer gefunden.",
+      label_user_search: "Suche",
+      placeholder_user_search: "E-Mail, Benutzername oder Rolle",
+      label_role_filter: "Rolle filtern",
+      role_all: "Alle Rollen",
+      label_user_sort: "Sortieren",
+      sort_user_email_asc: "E-Mail A-Z",
+      sort_user_email_desc: "E-Mail Z-A",
+      sort_user_created_asc: "Erstellt (älteste zuerst)",
+      sort_user_created_desc: "Erstellt (neueste zuerst)",
+      sort_user_entries_desc: "Meiste Einträge",
+      sort_user_sessions_desc: "Meiste Sessions",
+      sort_user_last_login_desc: "Letzter Login (neueste zuerst)",
+      btn_force_logout: "Session beenden",
+      msg_sessions_cleared: "Sessions beendet.",
+      msg_sessions_clear_failed: "Sessions konnten nicht beendet werden.",
+      msg_force_logout_self: "Du kannst dich nicht selbst abmelden.",
+      stats_summary: "Nutzer: {shown}/{total} · Admins: {admins} · Sessions: {sessions} · Einträge: {entries}",
+      modal_reset_title: "Passwort wirklich setzen?",
+      btn_confirm: "Bestätigen",
+      title_login: "Manga Tracker - Login",
+      heading_login: "Login",
+      label_email: "E-Mail",
+      label_login_identifier: "E-Mail oder Benutzername",
+      placeholder_login_identifier: "E-Mail oder Benutzername",
+      label_username: "Benutzername",
+      label_password: "Passwort",
+      btn_login: "Einloggen",
+      register_hint_text: "Noch kein Konto?",
+      register_hint_link: "Registrieren",
+      title_register: "Manga Tracker - Registrierung",
+      heading_register: "Registrierung",
+      label_password_confirm: "Passwort wiederholen",
+      label_role: "Rolle",
+      role_user: "Nutzer",
+      role_admin: "Admin",
+      btn_register: "Registrieren",
+      back_login: "Zurück zum Login",
+      msg_ready: "Bereit.",
+      msg_deleted: "Eintrag gelöscht.",
+      msg_missing_saved: "Fehlende Bände gespeichert.",
+      msg_missing_save_failed: "Fehlende Bände konnten nicht gespeichert werden.",
+      confirm_delete: "{title} wirklich löschen?",
+      msg_delete_failed: "Löschen fehlgeschlagen.",
+      missing_only_manga: "Nur für Manga verfügbar.",
+      missing_no_total: "Gesamtzahl fehlt.",
+      missing_complete: "Serie vollständig. Keine fehlenden Bände auswählbar.",
+      missing_choose: "Fehlende wählen",
+      rating_label: "Rating {value}",
+      rating_label_count: "Rating {value} ({count})",
+      year_label: "Jahr {value}",
+      pages_label: "{value} Seiten",
+      my_rating: "Meine Bewertung: {stars}",
+      my_rating_review: "Meine Bewertung: {stars} - {review}",
+      my_review: "Meine Rezension: {review}",
+      cover_alt: "Cover von {title}",
+      cover_alt_placeholder: "Platzhalter-Cover {title}",
+      review_selected: "Ausgewählt: {value} Sterne",
+      review_select_hint: "Bewertung auswählen (1-5 Sterne).",
+      msg_title_required: "Bitte Titel oder Suchbegriff eingeben.",
+      msg_searching: "Suche Hardcover...",
+      msg_search_loaded: "Hardcover-Ergebnisse geladen.",
+      msg_hardcover_failed: "Hardcover-Suche fehlgeschlagen.",
+      msg_link_applied: "Hardcover-Verknüpfung übernommen.",
+      msg_link_removed: "Hardcover-Verknüpfung entfernt.",
+      msg_edit_mode: "Bearbeitungsmodus aktiv.",
+      msg_load_failed: "Serie konnte nicht geladen werden.",
+      msg_list_load_failed: "Liste konnte nicht geladen werden.",
+      msg_save_failed: "Speichern fehlgeschlagen.",
+      msg_updated_redirect: "Eintrag aktualisiert. Weiterleitung zur Übersicht...",
+      msg_saved: "Eintrag gespeichert.",
+      msg_review_saved: "Bewertung gespeichert.",
+      msg_review_save_failed: "Bewertung konnte nicht gespeichert werden.",
+      msg_no_results: "Keine passenden Treffer gefunden.",
+      label_series: "Serie",
+      label_author: "Autor",
+      label_author_unknown: "Autor unbekannt",
+      label_hardcover_id: "Hardcover-ID",
+      btn_select: "Auswählen",
+      msg_login_progress: "Login...",
+      msg_login_failed: "Login fehlgeschlagen.",
+      msg_register_progress: "Registrierung läuft...",
+      msg_register_failed: "Registrierung fehlgeschlagen.",
+      msg_password_mismatch: "Passwörter stimmen nicht überein.",
+      msg_username_required: "Bitte einen Benutzernamen angeben.",
+      msg_register_blocked: "Registrierung ist deaktiviert.",
+      msg_user_created: "Nutzer wurde angelegt.",
+      msg_profile_saved: "Profil gespeichert.",
+      msg_profile_save_failed: "Profil konnte nicht gespeichert werden.",
+      msg_token_saved: "Token gespeichert.",
+      msg_token_removed: "Token entfernt.",
+      msg_token_missing: "Aktuell ist kein Token hinterlegt.",
+      msg_token_status: "Token gespeichert ({preview}).",
+      msg_token_available: "verfügbar",
+      msg_settings_load_failed: "Settings konnten nicht geladen werden.",
+      msg_token_save_failed: "Token konnte nicht gespeichert werden.",
+      msg_registration_load_failed: "Registrierung konnte nicht geladen werden.",
+      msg_registration_save_failed: "Registrierung konnte nicht gespeichert werden.",
+      msg_users_load_failed: "Nutzer konnten nicht geladen werden.",
+      msg_role_save_failed: "Rolle konnte nicht gespeichert werden.",
+      msg_password_save_failed: "Passwort konnte nicht gespeichert werden.",
+      msg_export_failed: "Export fehlgeschlagen.",
+      msg_import_failed: "Import fehlgeschlagen.",
+      msg_preview_failed: "CSV-Prüfung fehlgeschlagen.",
+      msg_selected_user: "den ausgewählten Nutzer",
+      msg_reset_confirm: "Passwort für {target} setzen?",
+      msg_self_demote: "Du kannst dir selbst keine Rechte entziehen.",
+      btn_role_save: "Rolle speichern",
+      msg_registration_saving: "Registrierung wird gespeichert...",
+      msg_registration_saved: "Registrierungseinstellung gespeichert.",
+      msg_users_loading: "Nutzer werden geladen...",
+      msg_role_saving: "Rolle wird gespeichert...",
+      msg_role_updated: "Rolle aktualisiert.",
+      msg_password_saving: "Passwort wird gespeichert...",
+      msg_password_updated: "Passwort aktualisiert.",
+      msg_export_building: "Export wird erstellt...",
+      msg_export_ready: "Export bereit.",
+      msg_import_running: "Import läuft...",
+      msg_import_done: "Import abgeschlossen: {imported} übernommen, {skipped} übersprungen.",
+      msg_import_select_file: "Bitte zuerst eine CSV-Datei auswählen.",
+      msg_preview_running: "CSV wird geprüft...",
+      msg_preview_result: "Vorschau: {total} Zeilen, {newCount} neu, {duplicateCount} Dubletten.",
+      msg_preview_examples: "Beispiele: {examples}",
+      msg_preview_errors: "Fehler: {errors}",
+      msg_admin_only: "Nur Admins können Hardcover-Token und Admin-Einstellungen bearbeiten."
+    },
+    en: {
+      nav_overview: "Overview",
+      nav_create: "Add",
+      nav_settings: "Settings",
+      nav_admin: "Admin",
+      nav_login: "Login",
+      nav_register: "Register",
+      btn_logout: "Logout",
+      theme_dark: "Dark mode",
+      theme_light: "Light mode",
+      lang_to_en: "Switch to English",
+      lang_to_de: "Switch to German",
+      title_overview: "Manga Tracker - Library",
+      heading_overview: "Library Overview",
+      label_search: "Search",
+      placeholder_search: "Title, author, or note",
+      label_book: "Book",
+      label_manga: "Manga",
+      label_book_single: "Single book",
+      media_manga_series: "manga series",
+      label_edit: "edit",
+      label_entry: "entry",
+      label_sort: "Sort",
+      sort_updated_desc: "Last updated (newest first)",
+      sort_title_asc: "Title A-Z",
+      sort_title_desc: "Title Z-A",
+      sort_owned_desc: "Most volumes owned",
+      sort_owned_asc: "Fewest volumes owned",
+      label_genre: "Genre",
+      genre_all: "All genres",
+      label_genres: "Genres",
+      label_moods: "Moods",
+      label_warnings: "Warnings",
+      list_header: "Your entries",
+      count_entry_singular: "entry",
+      count_entry_plural: "entries",
+      th_cover: "Cover",
+      th_title: "Title",
+      th_type: "Type",
+      th_author: "Author",
+      th_volumes: "Volumes / Type",
+      th_missing: "Missing",
+      th_actions: "Actions",
+      empty_state: "No entries found.",
+      btn_review: "Review",
+      btn_edit: "Edit",
+      btn_delete: "Delete",
+      review_title: "Review",
+      review_title_with: "Review: {title}",
+      review_hint: "Select a rating (1-5 stars).",
+      review_label: "Your review (optional)",
+      btn_save: "Save",
+      btn_review_clear: "Clear rating",
+      btn_cancel: "Cancel",
+      title_create: "Manga Tracker - Add",
+      heading_new_manga: "Add new manga series",
+      heading_new_book: "Add new book",
+      label_title: "Title",
+      label_is_book: "Save as book (no volume tracking)",
+      label_owned: "Owned volumes",
+      label_total: "Total volumes (optional)",
+      label_status: "Status",
+      status_planned: "Planned",
+      status_collecting: "Collecting",
+      status_paused: "Paused",
+      status_completed: "Completed",
+      label_notes: "Notes",
+      hardcover_heading: "Hardcover link",
+      hardcover_subtitle: "Search by title/author and pick the right match.",
+      placeholder_hardcover: "e.g. One Piece",
+      btn_hardcover_search: "Search Hardcover",
+      hardcover_empty: "No Hardcover link selected yet.",
+      btn_clear_link: "Remove link",
+      btn_cancel_edit: "Cancel edit",
+      quick_access_title: "Quick access",
+      quick_access_desc: "Go to overview with search, sorting, and filters:",
+      quick_access_link: "Go to overview",
+      title_settings: "Manga Tracker - Settings",
+      title_admin: "Manga Tracker - Admin",
+      heading_settings: "Settings",
+      heading_admin: "Admin",
+      profile_title: "Profile",
+      profile_desc: "Update your username.",
+      btn_profile_save: "Save",
+      settings_token_desc: "Store your Hardcover API token here. It will be saved in the database and used for Hardcover searches.",
+      label_token: "Hardcover API token",
+      btn_token_save: "Save token",
+      btn_token_clear: "Remove token",
+      export_title: "Data export",
+      export_desc: "Export your library as a CSV file.",
+      btn_export: "Export CSV",
+      import_title: "Data import",
+      import_desc: "Import a previously exported CSV file into your library.",
+      btn_preview: "Preview CSV",
+      btn_import: "Import CSV",
+      import_hint: "Note: Import creates new entries. Duplicates are skipped automatically (title + type).",
+      admin_title: "Admin settings",
+      admin_desc: "Manage registration, passwords, and user roles.",
+      btn_refresh: "Refresh",
+      reset_title: "Reset password",
+      reset_desc: "Set a new password for a user.",
+      reset_placeholder_password: "New password",
+      reset_placeholder_confirm: "Repeat password",
+      btn_reset_password: "Set password",
+      registration_title: "Registration",
+      registration_desc: "Controls whether new users can self-register.",
+      th_user_email: "Email",
+      th_user_username: "Username",
+      th_user_role: "Role",
+      th_user_entries: "Entries",
+      th_user_sessions: "Sessions",
+      th_user_last_login: "Last login",
+      th_user_created: "Created",
+      th_user_action: "Action",
+      users_empty: "No users found.",
+      label_user_search: "Search",
+      placeholder_user_search: "Email, username, or role",
+      label_role_filter: "Role filter",
+      role_all: "All roles",
+      label_user_sort: "Sort",
+      sort_user_email_asc: "Email A-Z",
+      sort_user_email_desc: "Email Z-A",
+      sort_user_created_asc: "Created (oldest first)",
+      sort_user_created_desc: "Created (newest first)",
+      sort_user_entries_desc: "Most entries",
+      sort_user_sessions_desc: "Most sessions",
+      sort_user_last_login_desc: "Last login (newest first)",
+      btn_force_logout: "End session",
+      msg_sessions_cleared: "Sessions ended.",
+      msg_sessions_clear_failed: "Sessions could not be ended.",
+      msg_force_logout_self: "You cannot log yourself out.",
+      stats_summary: "Users: {shown}/{total} · Admins: {admins} · Sessions: {sessions} · Entries: {entries}",
+      modal_reset_title: "Set password now?",
+      btn_confirm: "Confirm",
+      title_login: "Manga Tracker - Login",
+      heading_login: "Login",
+      label_email: "Email",
+      label_login_identifier: "Email or username",
+      placeholder_login_identifier: "Email or username",
+      label_username: "Username",
+      label_password: "Password",
+      btn_login: "Sign in",
+      register_hint_text: "No account yet?",
+      register_hint_link: "Register",
+      title_register: "Manga Tracker - Register",
+      heading_register: "Register",
+      label_password_confirm: "Repeat password",
+      label_role: "Role",
+      role_user: "User",
+      role_admin: "Admin",
+      btn_register: "Register",
+      back_login: "Back to login",
+      msg_ready: "Ready.",
+      msg_deleted: "Entry deleted.",
+      msg_missing_saved: "Missing volumes saved.",
+      msg_missing_save_failed: "Missing volumes could not be saved.",
+      confirm_delete: "Delete {title}?",
+      msg_delete_failed: "Delete failed.",
+      missing_only_manga: "Only available for manga.",
+      missing_no_total: "Total count missing.",
+      missing_complete: "Series complete. No missing volumes selectable.",
+      missing_choose: "Select missing",
+      rating_label: "Rating {value}",
+      rating_label_count: "Rating {value} ({count})",
+      year_label: "Year {value}",
+      pages_label: "{value} pages",
+      my_rating: "My rating: {stars}",
+      my_rating_review: "My rating: {stars} - {review}",
+      my_review: "My review: {review}",
+      cover_alt: "Cover of {title}",
+      cover_alt_placeholder: "Placeholder cover {title}",
+      review_selected: "Selected: {value} stars",
+      review_select_hint: "Select a rating (1-5 stars).",
+      msg_title_required: "Please enter a title or search term.",
+      msg_searching: "Searching Hardcover...",
+      msg_search_loaded: "Hardcover results loaded.",
+      msg_hardcover_failed: "Hardcover search failed.",
+      msg_link_applied: "Hardcover link applied.",
+      msg_link_removed: "Hardcover link removed.",
+      msg_edit_mode: "Edit mode active.",
+      msg_load_failed: "Entry could not be loaded.",
+      msg_list_load_failed: "List could not be loaded.",
+      msg_save_failed: "Save failed.",
+      msg_updated_redirect: "Entry updated. Redirecting to overview...",
+      msg_saved: "Entry saved.",
+      msg_review_saved: "Review saved.",
+      msg_review_save_failed: "Review could not be saved.",
+      msg_no_results: "No matching results found.",
+      label_series: "Series",
+      label_author: "Author",
+      label_author_unknown: "Author unknown",
+      label_hardcover_id: "Hardcover ID",
+      btn_select: "Select",
+      msg_login_progress: "Signing in...",
+      msg_login_failed: "Login failed.",
+      msg_register_progress: "Registering...",
+      msg_register_failed: "Registration failed.",
+      msg_password_mismatch: "Passwords do not match.",
+      msg_username_required: "Please enter a username.",
+      msg_register_blocked: "Registration is disabled.",
+      msg_user_created: "User created.",
+      msg_profile_saved: "Profile saved.",
+      msg_profile_save_failed: "Profile could not be saved.",
+      msg_token_saved: "Token saved.",
+      msg_token_removed: "Token removed.",
+      msg_token_missing: "No token stored yet.",
+      msg_token_status: "Token saved ({preview}).",
+      msg_token_available: "available",
+      msg_settings_load_failed: "Settings could not be loaded.",
+      msg_token_save_failed: "Token could not be saved.",
+      msg_registration_load_failed: "Registration setting could not be loaded.",
+      msg_registration_save_failed: "Registration setting could not be saved.",
+      msg_users_load_failed: "Users could not be loaded.",
+      msg_role_save_failed: "Role could not be saved.",
+      msg_password_save_failed: "Password could not be saved.",
+      msg_export_failed: "Export failed.",
+      msg_import_failed: "Import failed.",
+      msg_preview_failed: "CSV preview failed.",
+      msg_selected_user: "the selected user",
+      msg_reset_confirm: "Set password for {target}?",
+      msg_self_demote: "You cannot remove your own admin rights.",
+      btn_role_save: "Save role",
+      msg_registration_saving: "Saving registration setting...",
+      msg_registration_saved: "Registration setting saved.",
+      msg_users_loading: "Loading users...",
+      msg_role_saving: "Saving role...",
+      msg_role_updated: "Role updated.",
+      msg_password_saving: "Saving password...",
+      msg_password_updated: "Password updated.",
+      msg_export_building: "Building export...",
+      msg_export_ready: "Export ready.",
+      msg_import_running: "Import running...",
+      msg_import_done: "Import complete: {imported} added, {skipped} skipped.",
+      msg_import_select_file: "Please select a CSV file first.",
+      msg_preview_running: "Checking CSV...",
+      msg_preview_result: "Preview: {total} rows, {newCount} new, {duplicateCount} duplicates.",
+      msg_preview_examples: "Examples: {examples}",
+      msg_preview_errors: "Errors: {errors}",
+      msg_admin_only: "Only admins can edit Hardcover token and admin settings."
+    }
+  };
+
+  let currentLang = "de";
+
+  function getInitialLang() {
+    const stored = localStorage.getItem(LANG_KEY);
+    if (SUPPORTED.includes(stored)) {
+      return stored;
+    }
+
+    const browser = String(navigator.language || "").toLowerCase();
+    if (browser.startsWith("de")) {
+      return "de";
+    }
+
+    return "en";
+  }
+
+  function t(key, vars) {
+    const table = DICT[currentLang] || DICT.en;
+    let value = table[key] || DICT.en[key] || key;
+    if (vars) {
+      Object.keys(vars).forEach((name) => {
+        value = value.replaceAll(`{${name}}`, String(vars[name]));
+      });
+    }
+    return value;
+  }
+
+  function applyTranslations() {
+    document.documentElement.lang = currentLang;
+
+    document.querySelectorAll("[data-i18n]").forEach((el) => {
+      const key = el.getAttribute("data-i18n");
+      if (key) {
+        el.textContent = t(key);
+      }
+    });
+
+    document.querySelectorAll("[data-i18n-placeholder]").forEach((el) => {
+      const key = el.getAttribute("data-i18n-placeholder");
+      if (key) {
+        el.setAttribute("placeholder", t(key));
+      }
+    });
+
+    document.querySelectorAll("[data-i18n-title]").forEach((el) => {
+      const key = el.getAttribute("data-i18n-title");
+      if (key) {
+        el.setAttribute("title", t(key));
+      }
+    });
+
+    document.querySelectorAll("[data-i18n-aria]").forEach((el) => {
+      const key = el.getAttribute("data-i18n-aria");
+      if (key) {
+        el.setAttribute("aria-label", t(key));
+      }
+    });
+  }
+
+  function updateLangToggle() {
+    const button = document.getElementById("lang-toggle");
+    if (!button) {
+      return;
+    }
+
+    const next = currentLang === "de" ? "en" : "de";
+    button.textContent = next.toUpperCase();
+    button.setAttribute("title", t(`lang_to_${next}`));
+    button.setAttribute("aria-label", t(`lang_to_${next}`));
+  }
+
+  function setLang(lang) {
+    if (!SUPPORTED.includes(lang)) {
+      return;
+    }
+
+    currentLang = lang;
+    localStorage.setItem(LANG_KEY, lang);
+    applyTranslations();
+    updateLangToggle();
+    window.dispatchEvent(new CustomEvent("manga-i18n:change", { detail: { lang } }));
+  }
+
+  function init() {
+    currentLang = getInitialLang();
+    applyTranslations();
+    updateLangToggle();
+
+    const button = document.getElementById("lang-toggle");
+    if (button) {
+      button.addEventListener("click", () => {
+        const next = currentLang === "de" ? "en" : "de";
+        setLang(next);
+      });
+    }
+  }
+
+  window.MangaI18n = {
+    init,
+    t,
+    getLang: () => currentLang,
+    setLang
+  };
+
+  if (document.readyState === "loading") {
+    document.addEventListener("DOMContentLoaded", init);
+  } else {
+    init();
+  }
+})();

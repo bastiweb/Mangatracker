@@ -9,6 +9,7 @@ const ALLOWED_STATUS = ["Geplant", "Sammle", "Pausiert", "Abgeschlossen"];
 const ALLOWED_MEDIA_TYPES = ["manga", "book"];
 const ALLOWED_ROLES = ["user", "admin"];
 const PASSWORD_MIN_LENGTH = 8;
+const USERNAME_MAX_LENGTH = 40;
 const SESSION_COOKIE = "manga_tracker_session";
 const SESSION_TTL_SECONDS = 60 * 60 * 24 * 7;
 const HARDCOVER_TOKEN_KEY = "hardcover_api_token";
@@ -22,6 +23,23 @@ app.use(
     limit: "5mb"
   })
 );
+app.use(async (req, res, next) => {
+  if (req.path === "/admin.html") {
+    try {
+      const user = await getSessionUser(req);
+      if (!user) {
+        return res.redirect("/login");
+      }
+      if (user.role !== "admin") {
+        return res.redirect("/");
+      }
+    } catch (error) {
+      console.error(error);
+      return res.status(500).send("Auth check failed.");
+    }
+  }
+  return next();
+});
 app.use(express.static(path.join(__dirname, "..", "public"), { index: false }));
 
 function parsePositiveInt(value) {
@@ -158,6 +176,14 @@ function sanitizeEmail(value) {
   return value.trim().toLowerCase().slice(0, 200);
 }
 
+function sanitizeUsername(value, maxLength = USERNAME_MAX_LENGTH) {
+  if (typeof value !== "string") {
+    return "";
+  }
+
+  return value.trim().replace(/\s+/g, " ").slice(0, maxLength);
+}
+
 function parseCookies(header) {
   if (!header) {
     return {};
@@ -241,7 +267,8 @@ function sanitizeUser(row) {
   return {
     id: row.id,
     email: row.email,
-    role: row.role
+    role: row.role,
+    username: row.username || ""
   };
 }
 
@@ -269,7 +296,7 @@ async function getSessionUser(req) {
   const now = Math.floor(Date.now() / 1000);
 
   const row = await db.get(
-    "SELECT sessions.user_id, sessions.expires_at, users.email, users.role FROM sessions JOIN users ON sessions.user_id = users.id WHERE sessions.token_hash = ? AND sessions.expires_at > ?",
+    "SELECT sessions.user_id, sessions.expires_at, users.email, users.role, users.username FROM sessions JOIN users ON sessions.user_id = users.id WHERE sessions.token_hash = ? AND sessions.expires_at > ?",
     [tokenHash, now]
   );
 
@@ -280,7 +307,8 @@ async function getSessionUser(req) {
   return {
     id: row.user_id,
     email: row.email,
-    role: row.role
+    role: row.role,
+    username: row.username || ""
   };
 }
 
@@ -964,16 +992,35 @@ app.get("/api/auth/me", requireAuth, (req, res) => {
 });
 
 app.post("/api/auth/login", async (req, res) => {
-  const email = sanitizeEmail(req.body?.email || "");
+  const rawIdentifier = String(req.body?.identifier ?? req.body?.email ?? "");
+  const identifier = rawIdentifier.trim();
   const password = String(req.body?.password || "");
 
-  if (!email || !password) {
-    return res.status(400).json({ error: "Bitte E-Mail und Passwort angeben." });
+  if (!identifier || !password) {
+    return res.status(400).json({ error: "Bitte E-Mail oder Benutzernamen sowie Passwort angeben." });
   }
 
   try {
     const db = await initDb();
-    const user = await db.get("SELECT * FROM users WHERE LOWER(email) = ?", [email]);
+    let user = null;
+
+    if (identifier.includes("@")) {
+      const email = sanitizeEmail(identifier);
+      user = await db.get("SELECT * FROM users WHERE LOWER(email) = ?", [email]);
+    } else {
+      const username = sanitizeUsername(identifier);
+      if (!username) {
+        return res.status(400).json({ error: "Bitte E-Mail oder Benutzernamen angeben." });
+      }
+      const usernameKey = username.toLowerCase();
+      const matches = await db.all("SELECT * FROM users WHERE LOWER(username) = ?", [usernameKey]);
+      if (matches.length > 1) {
+        return res
+          .status(400)
+          .json({ error: "Benutzername ist nicht eindeutig. Bitte E-Mail verwenden." });
+      }
+      user = matches[0] || null;
+    }
 
     const verification = user ? verifyPassword(password, user.password_hash) : { ok: false, legacy: false };
 
@@ -1021,6 +1068,7 @@ app.post("/api/auth/logout", async (req, res) => {
 
 app.post("/api/auth/register", async (req, res) => {
   const email = sanitizeEmail(req.body?.email || "");
+  const username = sanitizeUsername(req.body?.username || "");
   const password = String(req.body?.password || "");
   const desiredRole = String(req.body?.role || "").toLowerCase();
 
@@ -1032,6 +1080,10 @@ app.post("/api/auth/register", async (req, res) => {
     return res.status(400).json({ error: `Passwort muss mindestens ${PASSWORD_MIN_LENGTH} Zeichen haben.` });
   }
 
+  if (!username) {
+    return res.status(400).json({ error: "Bitte einen Benutzernamen angeben." });
+  }
+
   try {
     const db = await initDb();
     const stats = await db.get("SELECT COUNT(*) AS count FROM users");
@@ -1040,6 +1092,11 @@ app.post("/api/auth/register", async (req, res) => {
     const existing = await db.get("SELECT id FROM users WHERE LOWER(email) = ?", [email]);
     if (existing) {
       return res.status(409).json({ error: "Diese E-Mail ist bereits registriert." });
+    }
+    const usernameKey = username.toLowerCase();
+    const usernameExists = await db.get("SELECT id FROM users WHERE LOWER(username) = ?", [usernameKey]);
+    if (usernameExists) {
+      return res.status(409).json({ error: "Benutzername ist bereits vergeben." });
     }
 
     let role = "user";
@@ -1063,11 +1120,11 @@ app.post("/api/auth/register", async (req, res) => {
 
     const passwordHash = hashPassword(password);
     const result = await db.run(
-      "INSERT INTO users (email, password_hash, role) VALUES (?, ?, ?)",
-      [email, passwordHash, role]
+      "INSERT INTO users (email, username, password_hash, role) VALUES (?, ?, ?, ?)",
+      [email, username, passwordHash, role]
     );
 
-    const created = await db.get("SELECT id, email, role FROM users WHERE id = ?", [result.lastID]);
+    const created = await db.get("SELECT id, email, username, role FROM users WHERE id = ?", [result.lastID]);
 
     if (!hasUsers) {
       await db.run("UPDATE mangas SET user_id = ? WHERE user_id IS NULL", [created.id]);
@@ -1117,6 +1174,32 @@ app.put("/api/settings/hardcover-token", requireAdmin, async (req, res) => {
   }
 });
 
+app.put("/api/settings/profile", requireAuth, async (req, res) => {
+  const username = sanitizeUsername(req.body?.username || "");
+
+  if (!username) {
+    return res.status(400).json({ error: "Bitte einen Benutzernamen angeben." });
+  }
+
+  try {
+    const db = await initDb();
+    const usernameKey = username.toLowerCase();
+    const existing = await db.get("SELECT id FROM users WHERE LOWER(username) = ? AND id != ?", [
+      usernameKey,
+      req.user.id
+    ]);
+    if (existing) {
+      return res.status(409).json({ error: "Benutzername ist bereits vergeben." });
+    }
+    await db.run("UPDATE users SET username = ? WHERE id = ?", [username, req.user.id]);
+    const updated = await db.get("SELECT id, email, username, role FROM users WHERE id = ?", [req.user.id]);
+    return res.json({ user: sanitizeUser(updated) });
+  } catch (error) {
+    console.error(error);
+    return res.status(500).json({ error: "Profil konnte nicht gespeichert werden." });
+  }
+});
+
 app.get("/api/admin/registration", requireAdmin, async (_req, res) => {
   try {
     const allowRegistration = await getRegistrationSetting();
@@ -1147,11 +1230,43 @@ app.put("/api/admin/registration", requireAdmin, async (req, res) => {
 app.get("/api/admin/users", requireAdmin, async (_req, res) => {
   try {
     const db = await initDb();
-    const users = await db.all("SELECT id, email, role, created_at FROM users ORDER BY created_at ASC");
+    const users = await db.all(`
+      SELECT
+        users.id,
+        users.email,
+        users.username,
+        users.role,
+        users.created_at,
+        (SELECT COUNT(*) FROM mangas WHERE user_id = users.id) AS entries_count,
+        (SELECT COUNT(*) FROM sessions WHERE user_id = users.id) AS session_count,
+        (SELECT MAX(created_at) FROM sessions WHERE user_id = users.id) AS last_session_at
+      FROM users
+      ORDER BY users.created_at ASC
+    `);
     return res.json({ users });
   } catch (error) {
     console.error(error);
     return res.status(500).json({ error: "Nutzer konnten nicht geladen werden." });
+  }
+});
+
+app.delete("/api/admin/users/:id/sessions", requireAdmin, async (req, res) => {
+  const id = parseId(req.params.id);
+  if (id === null) {
+    return res.status(400).json({ error: "Ungültige Nutzer-ID." });
+  }
+
+  if (req.user && req.user.id === id) {
+    return res.status(400).json({ error: "Du kannst dich nicht selbst abmelden." });
+  }
+
+  try {
+    const db = await initDb();
+    const result = await db.run("DELETE FROM sessions WHERE user_id = ?", [id]);
+    return res.json({ cleared: result.changes || 0 });
+  } catch (error) {
+    console.error(error);
+    return res.status(500).json({ error: "Sessions konnten nicht beendet werden." });
   }
 });
 
@@ -1987,6 +2102,22 @@ app.get("/create", (_req, res) => {
 
 app.get("/settings", (_req, res) => {
   res.sendFile(path.join(__dirname, "..", "public", "settings.html"));
+});
+
+app.get("/admin", async (req, res) => {
+  try {
+    const user = await getSessionUser(req);
+    if (!user) {
+      return res.redirect("/login");
+    }
+    if (user.role !== "admin") {
+      return res.redirect("/");
+    }
+    return res.sendFile(path.join(__dirname, "..", "public", "admin.html"));
+  } catch (error) {
+    console.error(error);
+    return res.status(500).send("Auth check failed.");
+  }
 });
 
 app.get("/login", (_req, res) => {

@@ -3,8 +3,11 @@ const message = document.getElementById("message");
 const roleField = document.getElementById("role-field");
 const roleSelect = document.getElementById("role");
 const emailInput = document.getElementById("email");
+const usernameInput = document.getElementById("username");
 const passwordInput = document.getElementById("password");
 const passwordConfirmInput = document.getElementById("passwordConfirm");
+
+const t = (key, vars) => (window.MangaI18n && window.MangaI18n.t ? window.MangaI18n.t(key, vars) : key);
 
 let registrationMode = "unknown";
 
@@ -59,26 +62,32 @@ async function resolveRegistrationMode() {
   registrationMode = "blocked";
   roleField.hidden = true;
   setFormEnabled(false);
-  setMessage("Registrierung ist deaktiviert. Bitte als Admin einloggen.", true);
+  setMessage(t("msg_register_blocked"), true);
 }
 
 form.addEventListener("submit", async (event) => {
   event.preventDefault();
 
   if (registrationMode === "blocked") {
-    setMessage("Registrierung ist deaktiviert.", true);
+    setMessage(t("msg_register_blocked"), true);
     return;
   }
 
-  setMessage("Registrierung läuft...", false);
+  setMessage(t("msg_register_progress"), false);
 
   if (passwordInput.value !== passwordConfirmInput.value) {
-    setMessage("Passwörter stimmen nicht überein.", true);
+    setMessage(t("msg_password_mismatch"), true);
+    return;
+  }
+
+  if (!usernameInput.value.trim()) {
+    setMessage(t("msg_username_required"), true);
     return;
   }
 
   const payload = {
     email: emailInput.value,
+    username: usernameInput.value.trim(),
     password: passwordInput.value
   };
 
@@ -95,11 +104,11 @@ form.addEventListener("submit", async (event) => {
 
     const data = await response.json().catch(() => ({}));
     if (!response.ok) {
-      throw new Error(data.error || "Registrierung fehlgeschlagen.");
+      throw new Error(data.error || t("msg_register_failed"));
     }
 
     if (registrationMode === "admin") {
-      setMessage("Nutzer wurde angelegt.");
+      setMessage(t("msg_user_created"));
       form.reset();
       if (roleSelect) {
         roleSelect.value = "user";

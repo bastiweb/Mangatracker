@@ -3,8 +3,9 @@
   <head>
     <meta charset="UTF-8" />
     <meta name="viewport" content="width=device-width, initial-scale=1.0" />
-    <title>Manga Tracker - Registrierung</title>
+    <title data-i18n="title_register">Manga Tracker - Registrierung</title>
     <link rel="stylesheet" href="/styles.css" />
+    <script src="/i18n.js" defer></script>
     <script src="/theme.js" defer></script>
     <script src="/register.js" defer></script>
   </head>
@@ -13,21 +14,25 @@
       <div class="container topbar-inner">
         <a class="brand" href="/">Manga Tracker</a>
         <div class="spacer"></div>
+        <button id="lang-toggle" class="secondary" type="button">EN</button>
         <button id="theme-toggle" class="secondary" type="button" aria-pressed="false">Darkmode</button>
       </div>
     </header>
 
     <main class="container page-grid">
       <section class="panel auth-panel">
-        <h1>Registrierung</h1>
+        <h1 data-i18n="heading_register">Registrierung</h1>
         <form id="register-form">
-          <label for="email">E-Mail</label>
+          <label for="email" data-i18n="label_email">E-Mail</label>
           <input id="email" name="email" type="email" autocomplete="email" required />
 
-          <label for="password">Passwort</label>
+          <label for="username" data-i18n="label_username">Benutzername</label>
+          <input id="username" name="username" type="text" autocomplete="username" required />
+
+          <label for="password" data-i18n="label_password">Passwort</label>
           <input id="password" name="password" type="password" autocomplete="new-password" required />
 
-          <label for="passwordConfirm">Passwort wiederholen</label>
+          <label for="passwordConfirm" data-i18n="label_password_confirm">Passwort wiederholen</label>
           <input
             id="passwordConfirm"
             name="passwordConfirm"
@@ -37,16 +42,16 @@
           />
 
           <div id="role-field" hidden>
-            <label for="role">Rolle</label>
+            <label for="role" data-i18n="label_role">Rolle</label>
             <select id="role" name="role">
-              <option value="user" selected>Nutzer</option>
-              <option value="admin">Admin</option>
+              <option value="user" selected data-i18n="role_user">Nutzer</option>
+              <option value="admin" data-i18n="role_admin">Admin</option>
             </select>
           </div>
 
           <div class="actions">
-            <button type="submit">Registrieren</button>
-            <a class="button-link secondary" href="/login">Zurück zum Login</a>
+            <button type="submit" data-i18n="btn_register">Registrieren</button>
+            <a class="button-link secondary" href="/login" data-i18n="back_login">Zurück zum Login</a>
           </div>
         </form>
 

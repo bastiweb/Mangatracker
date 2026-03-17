@@ -3,37 +3,35 @@ const tokenInput = document.getElementById("token");
 const clearBtn = document.getElementById("clear-token-btn");
 const tokenStatus = document.getElementById("token-status");
 const message = document.getElementById("message");
+const profileForm = document.getElementById("profile-form");
+const profileUsernameInput = document.getElementById("profile-username");
+const profileMessage = document.getElementById("profile-message");
 const exportBtn = document.getElementById("export-csv-btn");
 const exportMessage = document.getElementById("export-message");
 const importBtn = document.getElementById("import-csv-btn");
 const previewBtn = document.getElementById("preview-csv-btn");
 const importFileInput = document.getElementById("import-file");
 const importMessage = document.getElementById("import-message");
-const adminPanel = document.getElementById("admin-panel");
-const registrationToggle = document.getElementById("registration-toggle");
-const refreshUsersBtn = document.getElementById("refresh-users");
-const userTableBody = document.getElementById("user-table-body");
-const usersEmpty = document.getElementById("users-empty");
-const usersMessage = document.getElementById("users-message");
-const resetForm = document.getElementById("password-reset-form");
-const resetUserSelect = document.getElementById("reset-user");
-const resetPasswordInput = document.getElementById("reset-password");
-const resetPasswordConfirmInput = document.getElementById("reset-password-confirm");
-const modalOverlay = document.getElementById("modal-overlay");
-const modalText = document.getElementById("modal-text");
-const modalConfirm = document.getElementById("modal-confirm");
-const modalCancel = document.getElementById("modal-cancel");
 
-let currentUser = null;
-let pendingReset = null;
+const t = (key, vars) => (window.MangaI18n && window.MangaI18n.t ? window.MangaI18n.t(key, vars) : key);
 
-if (modalOverlay) {
-  modalOverlay.hidden = true;
-}
+let cachedTokenPayload = null;
 
 function setMessage(text, isError = false) {
+  if (!message) {
+    return;
+  }
   message.textContent = text;
   message.style.color = isError ? "var(--danger)" : "var(--muted)";
+}
+
+function setProfileMessage(text, isError = false) {
+  if (!profileMessage) {
+    return;
+  }
+
+  profileMessage.textContent = text;
+  profileMessage.style.color = isError ? "var(--danger)" : "var(--muted)";
 }
 
 function setExportMessage(text, isError = false) {
@@ -55,18 +53,27 @@ function setImportMessage(text, isError = false) {
 }
 
 function setTokenFormEnabled(enabled) {
+  if (!form) {
+    return;
+  }
   form.querySelectorAll("input, button").forEach((element) => {
     element.disabled = !enabled;
   });
 }
 
 function setStatus(payload) {
+  cachedTokenPayload = payload;
+  if (!tokenStatus) {
+    return;
+  }
   if (!payload?.hasToken) {
-    tokenStatus.textContent = "Aktuell ist kein Token hinterlegt.";
+    tokenStatus.textContent = t("msg_token_missing");
     return;
   }
 
-  tokenStatus.textContent = `Token gespeichert (${payload.tokenPreview || "verfügbar"}).`;
+  tokenStatus.textContent = t("msg_token_status", {
+    preview: payload.tokenPreview || t("msg_token_available")
+  });
 }
 
 async function loadTokenStatus() {
@@ -74,7 +81,9 @@ async function loadTokenStatus() {
   const data = await response.json().catch(() => ({}));
 
   if (!response.ok) {
-    throw new Error(data.error || "Settings konnten nicht geladen werden.");
+    const error = new Error(data.error || t("msg_settings_load_failed"));
+    error.status = response.status;
+    throw error;
   }
 
   setStatus(data);
@@ -90,176 +99,82 @@ async function saveToken(token) {
   const data = await response.json().catch(() => ({}));
 
   if (!response.ok) {
-    throw new Error(data.error || "Token konnte nicht gespeichert werden.");
+    throw new Error(data.error || t("msg_token_save_failed"));
   }
 
   setStatus(data);
 }
 
+async function saveProfile(username) {
+  const response = await fetch("/api/settings/profile", {
+    method: "PUT",
+    headers: { "Content-Type": "application/json" },
+    body: JSON.stringify({ username })
+  });
+
+  const data = await response.json().catch(() => ({}));
+
+  if (!response.ok) {
+    throw new Error(data.error || t("msg_profile_save_failed"));
+  }
+
+  return data.user;
+}
+
 async function loadCurrentUser() {
+  if (window.MangaAuthUser) {
+    return window.MangaAuthUser;
+  }
   const response = await fetch("/api/auth/me");
   if (!response.ok) {
     return null;
   }
-
   const data = await response.json().catch(() => ({}));
   return data.user || null;
 }
 
-function setUsersMessage(text, isError = false) {
-  usersMessage.textContent = text;
-  usersMessage.style.color = isError ? "var(--danger)" : "var(--muted)";
-}
-
-function formatDate(value) {
-  if (!value) {
-    return "-";
-  }
-
-  const parsed = new Date(value);
-  if (Number.isNaN(parsed.getTime())) {
-    return value;
-  }
-
-  return parsed.toLocaleString("de-DE", { dateStyle: "medium", timeStyle: "short" });
-}
-
-async function loadRegistrationSetting() {
-  const response = await fetch("/api/admin/registration");
-  const data = await response.json().catch(() => ({}));
-
-  if (!response.ok) {
-    throw new Error(data.error || "Registrierung konnte nicht geladen werden.");
-  }
-
-  registrationToggle.checked = Boolean(data.allowRegistration);
-}
-
-async function saveRegistrationSetting(value) {
-  const response = await fetch("/api/admin/registration", {
-    method: "PUT",
-    headers: { "Content-Type": "application/json" },
-    body: JSON.stringify({ allowRegistration: value })
-  });
-
-  const data = await response.json().catch(() => ({}));
-  if (!response.ok) {
-    throw new Error(data.error || "Registrierung konnte nicht gespeichert werden.");
-  }
-
-  registrationToggle.checked = Boolean(data.allowRegistration);
-}
-
-function buildUserRow(user) {
-  const row = document.createElement("tr");
-  row.dataset.userId = String(user.id);
-
-  const emailCell = document.createElement("td");
-  emailCell.textContent = user.email;
-  row.appendChild(emailCell);
-
-  const roleCell = document.createElement("td");
-  const roleSelect = document.createElement("select");
-  roleSelect.innerHTML = `
-    <option value="user">Nutzer</option>
-    <option value="admin">Admin</option>
-  `;
-  roleSelect.value = user.role;
-  const isSelf = currentUser && Number(currentUser.id) === Number(user.id);
-  if (isSelf) {
-    roleSelect.disabled = true;
-  }
-  roleCell.appendChild(roleSelect);
-  row.appendChild(roleCell);
-
-  const createdCell = document.createElement("td");
-  createdCell.textContent = formatDate(user.created_at);
-  row.appendChild(createdCell);
-
-  const actionCell = document.createElement("td");
-  const saveBtn = document.createElement("button");
-  saveBtn.type = "button";
-  saveBtn.className = "secondary";
-  saveBtn.textContent = "Rolle speichern";
-  if (isSelf) {
-    saveBtn.disabled = true;
-    saveBtn.title = "Du kannst dir selbst keine Rechte entziehen.";
-  }
-  actionCell.appendChild(saveBtn);
-  row.appendChild(actionCell);
-
-  saveBtn.addEventListener("click", async () => {
-    saveBtn.disabled = true;
-    setUsersMessage("Rolle wird gespeichert...");
-
-    try {
-      const response = await fetch(`/api/admin/users/${user.id}/role`, {
-        method: "PUT",
-        headers: { "Content-Type": "application/json" },
-        body: JSON.stringify({ role: roleSelect.value })
-      });
-
-      const data = await response.json().catch(() => ({}));
-      if (!response.ok) {
-        throw new Error(data.error || "Rolle konnte nicht gespeichert werden.");
-      }
-
-      setUsersMessage("Rolle aktualisiert.");
-      roleSelect.value = data.user?.role || roleSelect.value;
-    } catch (error) {
-      setUsersMessage(error.message, true);
-    } finally {
-      saveBtn.disabled = false;
-    }
-  });
-
-  return row;
-}
-
-async function loadUsers() {
-  const response = await fetch("/api/admin/users");
-  const data = await response.json().catch(() => ({}));
-
-  if (!response.ok) {
-    throw new Error(data.error || "Nutzer konnten nicht geladen werden.");
-  }
-
-  const users = Array.isArray(data.users) ? data.users : [];
-  userTableBody.innerHTML = "";
-  usersEmpty.hidden = users.length > 0;
-
-  users.forEach((user) => {
-    userTableBody.appendChild(buildUserRow(user));
-  });
-
-  if (resetUserSelect) {
-    resetUserSelect.innerHTML = "";
-    users.forEach((user) => {
-      const option = document.createElement("option");
-      option.value = String(user.id);
-      option.textContent = `${user.email} (${user.role})`;
-      resetUserSelect.appendChild(option);
-    });
-  }
-}
-
-form.addEventListener("submit", async (event) => {
+form?.addEventListener("submit", async (event) => {
   event.preventDefault();
 
   try {
     await saveToken(tokenInput.value.trim());
     tokenInput.value = "";
-    setMessage("Token gespeichert.");
+    setMessage(t("msg_token_saved"));
   } catch (error) {
     setMessage(error.message, true);
   }
 });
 
-clearBtn.addEventListener("click", async () => {
+profileForm?.addEventListener("submit", async (event) => {
+  event.preventDefault();
+
+  const username = profileUsernameInput?.value.trim() || "";
+  if (!username) {
+    setProfileMessage(t("msg_username_required"), true);
+    return;
+  }
+
+  try {
+    const updated = await saveProfile(username);
+    window.MangaAuthUser = updated;
+    if (profileUsernameInput) {
+      profileUsernameInput.value = updated.username || username;
+    }
+    const userLabel = document.getElementById("user-email");
+    if (userLabel) {
+      userLabel.textContent = updated.username || updated.email || "";
+    }
+    setProfileMessage(t("msg_profile_saved"));
+  } catch (error) {
+    setProfileMessage(error.message, true);
+  }
+});
+
+clearBtn?.addEventListener("click", async () => {
   try {
     await saveToken("");
     tokenInput.value = "";
-    setMessage("Token entfernt.");
+    setMessage(t("msg_token_removed"));
   } catch (error) {
     setMessage(error.message, true);
   }
@@ -267,11 +182,11 @@ clearBtn.addEventListener("click", async () => {
 
 exportBtn?.addEventListener("click", async () => {
   try {
-    setExportMessage("Export wird erstellt...");
+    setExportMessage(t("msg_export_building"));
     const response = await fetch("/api/export/csv");
     if (!response.ok) {
       const data = await response.json().catch(() => ({}));
-      throw new Error(data.error || "Export fehlgeschlagen.");
+      throw new Error(data.error || t("msg_export_failed"));
     }
 
     const blob = await response.blob();
@@ -284,7 +199,7 @@ exportBtn?.addEventListener("click", async () => {
     link.click();
     link.remove();
     window.URL.revokeObjectURL(url);
-    setExportMessage("Export bereit.");
+    setExportMessage(t("msg_export_ready"));
   } catch (error) {
     setExportMessage(error.message, true);
   }
@@ -292,12 +207,12 @@ exportBtn?.addEventListener("click", async () => {
 
 importBtn?.addEventListener("click", async () => {
   if (!importFileInput || !importFileInput.files || importFileInput.files.length === 0) {
-    setImportMessage("Bitte zuerst eine CSV-Datei auswählen.", true);
+    setImportMessage(t("msg_import_select_file"), true);
     return;
   }
 
   const file = importFileInput.files[0];
-  setImportMessage("Import läuft...");
+  setImportMessage(t("msg_import_running"));
 
   try {
     const csvText = await file.text();
@@ -309,14 +224,14 @@ importBtn?.addEventListener("click", async () => {
 
     const data = await response.json().catch(() => ({}));
     if (!response.ok) {
-      throw new Error(data.error || "Import fehlgeschlagen.");
+      throw new Error(data.error || t("msg_import_failed"));
     }
 
     const imported = data.imported ?? 0;
     const skipped = data.skipped ?? 0;
-    let info = `Import abgeschlossen: ${imported} übernommen, ${skipped} übersprungen.`;
+    let info = t("msg_import_done", { imported, skipped });
     if (Array.isArray(data.errors) && data.errors.length > 0) {
-      info += ` Erste Fehler: ${data.errors.join(" | ")}`;
+      info += ` ${t("msg_preview_errors", { errors: data.errors.join(" | ") })}`;
     }
     setImportMessage(info, skipped > 0);
     importFileInput.value = "";
@@ -327,12 +242,12 @@ importBtn?.addEventListener("click", async () => {
 
 previewBtn?.addEventListener("click", async () => {
   if (!importFileInput || !importFileInput.files || importFileInput.files.length === 0) {
-    setImportMessage("Bitte zuerst eine CSV-Datei auswählen.", true);
+    setImportMessage(t("msg_import_select_file"), true);
     return;
   }
 
   const file = importFileInput.files[0];
-  setImportMessage("CSV wird geprüft...");
+  setImportMessage(t("msg_preview_running"));
 
   try {
     const csvText = await file.text();
@@ -344,18 +259,18 @@ previewBtn?.addEventListener("click", async () => {
 
     const data = await response.json().catch(() => ({}));
     if (!response.ok) {
-      throw new Error(data.error || "CSV-Prüfung fehlgeschlagen.");
+      throw new Error(data.error || t("msg_preview_failed"));
     }
 
     const total = data.total ?? 0;
     const newCount = data.newCount ?? 0;
     const duplicateCount = data.duplicateCount ?? 0;
-    let info = `Vorschau: ${total} Zeilen, ${newCount} neu, ${duplicateCount} Dubletten.`;
+    let info = t("msg_preview_result", { total, newCount, duplicateCount });
     if (Array.isArray(data.duplicates) && data.duplicates.length > 0) {
-      info += ` Beispiele: ${data.duplicates.join(" | ")}`;
+      info += ` ${t("msg_preview_examples", { examples: data.duplicates.join(" | ") })}`;
     }
     if (Array.isArray(data.errors) && data.errors.length > 0) {
-      info += ` Fehler: ${data.errors.join(" | ")}`;
+      info += ` ${t("msg_preview_errors", { errors: data.errors.join(" | ") })}`;
     }
     setImportMessage(info, duplicateCount > 0);
   } catch (error) {
@@ -363,129 +278,44 @@ previewBtn?.addEventListener("click", async () => {
   }
 });
 
-registrationToggle?.addEventListener("change", async () => {
-  try {
-    setUsersMessage("Registrierung wird gespeichert...");
-    await saveRegistrationSetting(registrationToggle.checked);
-    setUsersMessage("Registrierungseinstellung gespeichert.");
-  } catch (error) {
-    registrationToggle.checked = !registrationToggle.checked;
-    setUsersMessage(error.message, true);
+window.addEventListener("manga-i18n:change", () => {
+  if (cachedTokenPayload) {
+    setStatus(cachedTokenPayload);
   }
 });
 
-refreshUsersBtn?.addEventListener("click", async () => {
-  try {
-    setUsersMessage("Nutzer werden geladen...");
-    await loadUsers();
-    setUsersMessage("Bereit.");
-  } catch (error) {
-    setUsersMessage(error.message, true);
-  }
-});
-
-function closeModal() {
-  if (!modalOverlay) {
-    return;
-  }
-
-  modalOverlay.hidden = true;
-  pendingReset = null;
+if (window.MangaTheme && typeof window.MangaTheme.init === "function") {
+  window.MangaTheme.init();
 }
-
-resetForm?.addEventListener("submit", async (event) => {
-  event.preventDefault();
-
-  if (resetPasswordInput.value !== resetPasswordConfirmInput.value) {
-    setUsersMessage("Passwörter stimmen nicht überein.", true);
-    return;
-  }
-
-  const selectedOption = resetUserSelect.options[resetUserSelect.selectedIndex];
-  const targetLabel = selectedOption ? selectedOption.textContent : "den ausgewählten Nutzer";
-
-  pendingReset = {
-    userId: resetUserSelect.value,
-    password: resetPasswordInput.value
-  };
-
-  if (modalText) {
-    modalText.textContent = `Passwort für ${targetLabel} setzen?`;
-  }
-
-  if (modalOverlay) {
-    modalOverlay.hidden = false;
-  }
-});
-
-modalCancel?.addEventListener("click", () => {
-  closeModal();
-});
-
-modalOverlay?.addEventListener("click", (event) => {
-  if (event.target === modalOverlay) {
-    closeModal();
-  }
-});
-
-modalConfirm?.addEventListener("click", async () => {
-  if (!pendingReset) {
-    closeModal();
-    return;
-  }
-
-  setUsersMessage("Passwort wird gespeichert...");
-
-  try {
-    const response = await fetch(`/api/admin/users/${pendingReset.userId}/password`, {
-      method: "PUT",
-      headers: { "Content-Type": "application/json" },
-      body: JSON.stringify({ password: pendingReset.password })
-    });
-
-    const data = await response.json().catch(() => ({}));
-    if (!response.ok) {
-      throw new Error(data.error || "Passwort konnte nicht gespeichert werden.");
-    }
-
-    resetForm.reset();
-    setUsersMessage("Passwort aktualisiert.");
-    closeModal();
-  } catch (error) {
-    setUsersMessage(error.message, true);
-    closeModal();
-  }
-});
-
-MangaTheme.init();
 
 (async () => {
   try {
-    currentUser = await loadCurrentUser();
-
+    const currentUser = await loadCurrentUser();
     const isAdmin = currentUser && currentUser.role === "admin";
 
+    if (currentUser && profileUsernameInput) {
+      profileUsernameInput.value = currentUser.username || "";
+    }
+    setProfileMessage(t("msg_ready"));
+
     if (!isAdmin) {
-      adminPanel.hidden = true;
-      closeModal();
       setTokenFormEnabled(false);
-      setMessage("Nur Admins können Hardcover-Token und Admin-Einstellungen bearbeiten.", true);
+      setMessage(t("msg_admin_only"), true);
+      if (tokenStatus) {
+        tokenStatus.textContent = t("msg_admin_only");
+      }
     } else {
-      adminPanel.hidden = false;
       setTokenFormEnabled(true);
       await loadTokenStatus();
-      await loadRegistrationSetting();
-      await loadUsers();
-      setMessage("Bereit.");
-      setUsersMessage("Bereit.");
+      setMessage(t("msg_ready"));
     }
 
-    setExportMessage("Bereit.");
-    setImportMessage("Bereit.");
+    setExportMessage(t("msg_ready"));
+    setImportMessage(t("msg_ready"));
   } catch (error) {
     setMessage(error.message, true);
-    setUsersMessage(error.message, true);
     setExportMessage(error.message, true);
     setImportMessage(error.message, true);
+    setProfileMessage(error.message, true);
   }
 })();

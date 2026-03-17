@@ -5,6 +5,7 @@ const isAuthPage = authPages.has(currentPath);
 const userEmail = document.getElementById("user-email");
 const adminBadge = document.getElementById("admin-badge");
 const logoutBtn = document.getElementById("logout-btn");
+const adminLink = document.getElementById("admin-link");
 
 async function fetchMe() {
   const response = await fetch("/api/auth/me");
@@ -18,11 +19,13 @@ async function fetchMe() {
 
 async function logout() {
   await fetch("/api/auth/logout", { method: "POST" });
+  window.MangaAuthUser = null;
   window.location.href = "/login";
 }
 
 (async () => {
   const user = await fetchMe();
+  window.MangaAuthUser = user;
 
   if (!user && !isAuthPage) {
     window.location.href = "/login";
@@ -40,11 +43,15 @@ async function logout() {
   }
 
   if (userEmail) {
-    userEmail.textContent = user ? user.email : "";
+    userEmail.textContent = user ? (user.username || user.email) : "";
   }
 
   if (adminBadge) {
     adminBadge.hidden = !user || user.role !== "admin";
+  }
+
+  if (adminLink) {
+    adminLink.hidden = !user || user.role !== "admin";
   }
 
   if (logoutBtn) {

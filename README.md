@@ -1,117 +1,124 @@
 # Manga Tracker
 
-Web-App zum Verwalten deiner Manga-Serien und Bücher mit SQLite-Datenbank, Hardcover-Anbindung, Such-/Sortierübersicht und Docker-Setup.
+Web app to manage your manga series and books with an SQLite database, Hardcover integration, search/sort/filter, and Docker setup.
 
-## Seiten
+## Pages
 
-- `/` Übersicht mit Suche, Sortierung, Filter und fehlenden Bänden
-- `/create` Erfassung/Bearbeitung von Manga-Serien und Büchern
-- `/settings` Einstellungen für Hardcover API Token
+- `/` Overview with search, sorting, genre filter, and missing volumes
+- `/create` Create/edit manga series and books
+- `/settings` Settings (profile, Hardcover token for admins, import/export)
+- `/admin` Admin user management (roles, registration toggle, password reset)
 - `/login` Login
-- `/register` Registrierung (nur beim ersten Setup oder als Admin)
+- `/register` Registration (first setup or admin-only)
 
-## Funktionen
+## Features
 
-- Manga-Serien und Bücher anlegen, bearbeiten und löschen
-- Medientyp wählen (Manga oder Buch)
-- Suchfunktion in der Übersicht (Titel, Autor, Notizen, Status)
-- Sortierfunktion (zuletzt geändert, Titel, vorhandene Bände)
-- Fehlende Bände explizit markieren (pro Band auswählbar)
-- Hardcover-Suche mit Auswahl von Autor + Cover
-- Persistente Speicherung des Hardcover API Tokens in der Datenbank
-- Darkmode mit manuellem Umschalter
-- Multi-User-Login (Admin/Nutzer) mit Sessions
+- Create, edit, and delete manga series and books
+- Choose media type (manga series or book)
+- Search in overview (title, author, notes, status)
+- Sorting (last updated, title, owned volumes)
+- Genre filter in overview
+- Mark missing volumes explicitly (per volume)
+- Hardcover search with author + cover selection
+- Hardcover API token stored in the database
+- Ratings (1–5 stars) + optional written review
+- CSV export/import for your library
+- Dark mode toggle
+- Language toggle (German/English)
+- Multi-user login (admin/user) with sessions
+- Usernames shown in the navigation and editable in Settings
+- Login via email or username
+- Admin page with user management (roles, registration toggle, password reset, force logout)
 
 ## Hardcover API
 
-Die App nutzt serverseitig folgende Vorgaben:
+The app uses the following server-side settings:
 
 - Endpoint: `https://api.hardcover.app/v1/graphql`
-- Header:
+- Headers:
   - `content-type: application/json`
-  - `authorization: <API Token aus Settings>`
+  - `authorization: <API token from Settings>`
 
-Die Suche läuft über den Manga-/Buchtitel und liefert bis zu 5 Treffer zur Auswahl.
+Searches are performed by manga/book title and return up to 5 matches to choose from.
 
-## Voraussetzungen (lokal)
+## Local requirements
 
 - Node.js 20+
 - npm
 
-## Lokal starten
+## Run locally
 
 ```bash
 npm install
 npm start
 ```
 
-Danach ist die App unter [http://localhost:3003](http://localhost:3003) erreichbar.
-HTTPS gibt es in der lokalen Node-Variante nicht, dafür den Docker-Setup mit Caddy nutzen.
+The app will be available at [http://localhost:3003](http://localhost:3003).
+HTTPS is only available via the Docker setup with Caddy.
 
-## Docker Build & Run
+## Docker build & run
 
 ```bash
 docker compose up --build -d
 ```
 
-Dann läuft die App über Caddy unter [https://localhost](https://localhost).
+The app is available via Caddy at [https://localhost](https://localhost).
 
-## HTTPS lokal (Caddy)
+## Local HTTPS (Caddy)
 
-Der Docker-Setup bringt einen Caddy-Reverse-Proxy mit lokalem TLS mit. Damit dein Browser `https://localhost` akzeptiert,
-muss das Caddy-Root-Zertifikat einmalig importiert werden.
+The Docker setup includes a Caddy reverse proxy with local TLS. To make your browser trust `https://localhost`, import the Caddy root certificate once.
 
-### 1) Caddy-Root-Zertifikat exportieren
+### 1) Export the Caddy root certificate
 
 ```bash
 docker cp manga-tracker-caddy:/data/caddy/pki/authorities/local/root.crt .\caddy-root.crt
 ```
 
-### 2) Zertifikat als vertrauenswürdig installieren (Windows)
+### 2) Install the certificate as trusted (Windows)
 
-PowerShell als Administrator:
+PowerShell as Administrator:
 
 ```powershell
 Import-Certificate -FilePath .\caddy-root.crt -CertStoreLocation Cert:\LocalMachine\Root
 ```
 
-Danach sollte `https://localhost` ohne Zertifikatsfehler funktionieren.
+After that, `https://localhost` should work without certificate warnings.
 
-### 3) Optional: `mangatracker.local` aktivieren
+### 3) Optional: enable `mangatracker.local`
 
-Wenn du `https://mangatracker.local` nutzen möchtest, ergänze die Hosts-Datei:
+If you want to use `https://mangatracker.local`, add it to your hosts file:
 
 ```
 127.0.0.1 mangatracker.local
 ```
 
-Datei: `C:\Windows\System32\drivers\etc\hosts` (Editor als Administrator öffnen).
+File: `C:\Windows\System32\drivers\etc\hosts` (open your editor as Administrator).
 
-### Datenpersistenz
+### Data persistence
 
-In `docker-compose.yml` ist ein Volume (`manga_data`) eingerichtet. Dadurch bleiben Daten und Settings (inkl. Token) nach Neustarts erhalten.
+`docker-compose.yml` defines a volume (`manga_data`) so data and settings (including tokens) persist across restarts.
 
-## Docker Image veröffentlichen (Docker Hub)
+## Publish Docker image (Docker Hub)
 
-Beispiel mit Docker-Hub-User `DEIN_USER` und Image `manga-tracker`:
+Example with Docker Hub user `YOUR_USER` and image `manga-tracker`:
 
 ```bash
-docker build -t DEIN_USER/manga-tracker:1.0.0 .
-docker tag DEIN_USER/manga-tracker:1.0.0 DEIN_USER/manga-tracker:latest
+docker build -t YOUR_USER/manga-tracker:1.0.0 .
+docker tag YOUR_USER/manga-tracker:1.0.0 YOUR_USER/manga-tracker:latest
 docker login
-docker push DEIN_USER/manga-tracker:1.0.0
-docker push DEIN_USER/manga-tracker:latest
+docker push YOUR_USER/manga-tracker:1.0.0
+docker push YOUR_USER/manga-tracker:latest
 ```
 
-Start vom veröffentlichten Image:
+Run the published image:
 
 ```bash
-docker run -d -p 3003:3003 -e DB_FILE=/data/manga.db -v manga_data:/data DEIN_USER/manga-tracker:latest
+docker run -d -p 3003:3003 -e DB_FILE=/data/manga.db -v manga_data:/data YOUR_USER/manga-tracker:latest
 ```
 
-Hinweis: Das Image allein liefert HTTP auf Port `3003`. Für HTTPS nutze den `docker-compose.yml` mit Caddy.
+Note: The image alone serves HTTP on port `3003`. Use `docker-compose.yml` with Caddy for HTTPS.
 
-## API-Endpunkte
+## API endpoints
 
 - `GET /api/health`
 - `GET /api/auth/bootstrap`
@@ -125,7 +132,12 @@ Hinweis: Das Image allein liefert HTTP auf Port `3003`. Für HTTPS nutze den `do
 - `PUT /api/manga/:id`
 - `PATCH /api/manga/:id/volumes`
 - `PATCH /api/manga/:id/missing-volumes`
+- `PATCH /api/manga/:id/review`
 - `DELETE /api/manga/:id`
 - `GET /api/settings/hardcover-token`
 - `PUT /api/settings/hardcover-token`
-- `GET /api/hardcover/search?query=<suchbegriff>`
+- `PUT /api/settings/profile`
+- `GET /api/hardcover/search?query=<search>`
+- `GET /api/export/csv`
+- `POST /api/import/csv`
+- `POST /api/import/csv/preview`

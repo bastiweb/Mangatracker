@@ -2,6 +2,8 @@ const form = document.getElementById("login-form");
 const message = document.getElementById("message");
 const registerHint = document.getElementById("register-hint");
 
+const t = (key, vars) => (window.MangaI18n && window.MangaI18n.t ? window.MangaI18n.t(key, vars) : key);
+
 function setMessage(text, isError = false) {
   message.textContent = text;
   message.style.color = isError ? "var(--danger)" : "var(--muted)";
@@ -25,10 +27,10 @@ async function checkBootstrap() {
 
 form.addEventListener("submit", async (event) => {
   event.preventDefault();
-  setMessage("Login...", false);
+  setMessage(t("msg_login_progress"), false);
 
   const payload = {
-    email: form.email.value,
+    identifier: form.identifier.value,
     password: form.password.value
   };
 
@@ -41,7 +43,7 @@ form.addEventListener("submit", async (event) => {
 
     const data = await response.json().catch(() => ({}));
     if (!response.ok) {
-      throw new Error(data.error || "Login fehlgeschlagen.");
+      throw new Error(data.error || t("msg_login_failed"));
     }
 
     window.location.href = "/";
