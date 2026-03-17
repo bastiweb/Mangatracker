@@ -2,15 +2,31 @@ services:
   manga-tracker:
     build: .
     container_name: manga-tracker
-    ports:
-      - "3003:3003"
     environment:
       - NODE_ENV=production
       - PORT=3003
       - DB_FILE=/data/manga.db
+      #- DB_ENCRYPTION_KEY=${DB_ENCRYPTION_KEY}
+      - DB_ENCRYPTION_KEY=1234567890
     volumes:
       - manga_data:/data
     restart: unless-stopped
 
+  caddy:
+    image: caddy:2
+    container_name: manga-tracker-caddy
+    ports:
+      - "80:80"
+      - "443:443"
+    volumes:
+      - ./Caddyfile:/etc/caddy/Caddyfile:ro
+      - caddy_data:/data
+      - caddy_config:/config
+    depends_on:
+      - manga-tracker
+    restart: unless-stopped
+
 volumes:
   manga_data:
+  caddy_data:
+  caddy_config:

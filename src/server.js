@@ -1,4 +1,5 @@
 const express = require("express");
+const crypto = require("crypto");
 const path = require("path");
 const { initDb } = require("./db");
 
@@ -6,7 +7,12 @@ const app = express();
 const PORT = process.env.PORT || 3003;
 const ALLOWED_STATUS = ["Geplant", "Sammle", "Pausiert", "Abgeschlossen"];
 const ALLOWED_MEDIA_TYPES = ["manga", "book"];
+const ALLOWED_ROLES = ["user", "admin"];
+const PASSWORD_MIN_LENGTH = 8;
+const SESSION_COOKIE = "manga_tracker_session";
+const SESSION_TTL_SECONDS = 60 * 60 * 24 * 7;
 const HARDCOVER_TOKEN_KEY = "hardcover_api_token";
+const REGISTRATION_SETTING_KEY = "allow_registration";
 const HARDCOVER_ENDPOINT = "https://api.hardcover.app/v1/graphql";
 
 app.use(express.json());
@@ -138,7 +144,177 @@ function parseTextArrayFromDb(value, maxItems = 12) {
     return [];
   }
 }
+function sanitizeEmail(value) {
+  if (typeof value !== "string") {
+    return "";
+  }
 
+  return value.trim().toLowerCase().slice(0, 200);
+}
+
+function parseCookies(header) {
+  if (!header) {
+    return {};
+  }
+
+  return header.split(";").reduce((acc, part) => {
+    const [key, ...rest] = part.trim().split("=");
+    if (!key) {
+      return acc;
+    }
+
+    acc[key] = decodeURIComponent(rest.join("="));
+    return acc;
+  }, {});
+}
+
+function getSessionToken(req) {
+  const cookies = parseCookies(req.headers.cookie);
+  return cookies[SESSION_COOKIE] || "";
+}
+
+function hashToken(token) {
+  return crypto.createHash("sha256").update(token).digest("hex");
+}
+
+function hashPassword(password) {
+  const salt = crypto.randomBytes(16);
+  const hash = crypto.scryptSync(password, salt, 64, { N: 16384, r: 8, p: 1 });
+  return `scrypt$${salt.toString("hex")}$${hash.toString("hex")}`;
+}
+
+function parsePasswordHash(storedHash) {
+  if (!storedHash) {
+    return null;
+  }
+
+  if (storedHash.includes("$")) {
+    const [scheme, saltHex, hashHex] = storedHash.split("$");
+    if (scheme !== "scrypt" || !saltHex || !hashHex) {
+      return null;
+    }
+
+    return { scheme, saltHex, hashHex, legacy: false };
+  }
+
+  if (storedHash.startsWith("scrypt")) {
+    const legacy = storedHash.slice("scrypt".length);
+    const saltHex = legacy.slice(0, 32);
+    const hashHex = legacy.slice(32);
+    if (saltHex.length !== 32 || hashHex.length !== 128) {
+      return null;
+    }
+
+    return { scheme: "scrypt", saltHex, hashHex, legacy: true };
+  }
+
+  return null;
+}
+
+function verifyPassword(password, storedHash) {
+  const parsed = parsePasswordHash(storedHash);
+  if (!parsed) {
+    return { ok: false, legacy: false };
+  }
+
+  const hash = crypto.scryptSync(password, Buffer.from(parsed.saltHex, "hex"), 64, { N: 16384, r: 8, p: 1 });
+  const expected = Buffer.from(parsed.hashHex, "hex");
+
+  if (expected.length !== hash.length) {
+    return { ok: false, legacy: parsed.legacy };
+  }
+
+  return { ok: crypto.timingSafeEqual(expected, hash), legacy: parsed.legacy };
+}
+
+function sanitizeUser(row) {
+  if (!row) {
+    return null;
+  }
+
+  return {
+    id: row.id,
+    email: row.email,
+    role: row.role
+  };
+}
+
+function buildSessionCookieOptions(req) {
+  const forwardedProto = req.headers["x-forwarded-proto"];
+  const isSecure = req.secure || forwardedProto === "https";
+
+  return {
+    httpOnly: true,
+    sameSite: "lax",
+    secure: isSecure,
+    maxAge: SESSION_TTL_SECONDS * 1000,
+    path: "/"
+  };
+}
+
+async function getSessionUser(req) {
+  const token = getSessionToken(req);
+  if (!token) {
+    return null;
+  }
+
+  const db = await initDb();
+  const tokenHash = hashToken(token);
+  const now = Math.floor(Date.now() / 1000);
+
+  const row = await db.get(
+    "SELECT sessions.user_id, sessions.expires_at, users.email, users.role FROM sessions JOIN users ON sessions.user_id = users.id WHERE sessions.token_hash = ? AND sessions.expires_at > ?",
+    [tokenHash, now]
+  );
+
+  if (!row) {
+    return null;
+  }
+
+  return {
+    id: row.user_id,
+    email: row.email,
+    role: row.role
+  };
+}
+
+async function requireAuth(req, res, next) {
+  try {
+    const user = await getSessionUser(req);
+    if (!user) {
+      return res.status(401).json({ error: "Bitte erneut einloggen." });
+    }
+
+    req.user = user;
+    return next();
+  } catch (error) {
+    console.error(error);
+    return res.status(500).json({ error: "Authentifizierung fehlgeschlagen." });
+  }
+}
+
+async function requireAdmin(req, res, next) {
+  try {
+    const user = await getSessionUser(req);
+    if (!user) {
+      return res.status(401).json({ error: "Bitte erneut einloggen." });
+    }
+
+    if (user.role !== "admin") {
+      return res.status(403).json({ error: "Keine Berechtigung." });
+    }
+
+    req.user = user;
+    return next();
+  } catch (error) {
+    console.error(error);
+    return res.status(500).json({ error: "Authentifizierung fehlgeschlagen." });
+  }
+}
+
+async function fetchMangaForUser(db, id, user) {
+  return db.get("SELECT * FROM mangas WHERE id = ? AND user_id = ?", [id, user.id]);
+}
 function normalizeMangaRow(row) {
   const mediaType = row.media_type === "book" ? "book" : "manga";
 
@@ -262,6 +438,20 @@ async function setSetting(key, value) {
     `,
     [key, value]
   );
+}
+
+async function getRegistrationSetting() {
+  const value = await getSetting(REGISTRATION_SETTING_KEY);
+  if (value === null || value === undefined || value === "") {
+    return true;
+  }
+
+  return String(value).toLowerCase() === "true";
+}
+
+async function setRegistrationSetting(allowRegistration) {
+  const normalized = allowRegistration ? "true" : "false";
+  await setSetting(REGISTRATION_SETTING_KEY, normalized);
 }
 
 function buildTokenPreview(token) {
@@ -622,7 +812,156 @@ app.get("/api/health", (_req, res) => {
   res.json({ ok: true });
 });
 
-app.get("/api/settings/hardcover-token", async (_req, res) => {
+app.get("/api/auth/bootstrap", async (_req, res) => {
+  try {
+    const db = await initDb();
+    const row = await db.get("SELECT COUNT(*) AS count FROM users");
+    const hasUsers = (row?.count || 0) > 0;
+    const allowRegistration = !hasUsers || (await getRegistrationSetting());
+    return res.json({ hasUsers, allowRegistration });
+  } catch (error) {
+    console.error(error);
+    return res.status(500).json({ error: "Auth-Status konnte nicht geladen werden." });
+  }
+});
+
+app.get("/api/auth/me", requireAuth, (req, res) => {
+  return res.json({ user: req.user });
+});
+
+app.post("/api/auth/login", async (req, res) => {
+  const email = sanitizeEmail(req.body?.email || "");
+  const password = String(req.body?.password || "");
+
+  if (!email || !password) {
+    return res.status(400).json({ error: "Bitte E-Mail und Passwort angeben." });
+  }
+
+  try {
+    const db = await initDb();
+    const user = await db.get("SELECT * FROM users WHERE LOWER(email) = ?", [email]);
+
+    const verification = user ? verifyPassword(password, user.password_hash) : { ok: false, legacy: false };
+
+    if (!user || !verification.ok) {
+      return res.status(401).json({ error: "Login fehlgeschlagen." });
+    }
+
+    if (verification.legacy) {
+      const upgradedHash = hashPassword(password);
+      await db.run("UPDATE users SET password_hash = ? WHERE id = ?", [upgradedHash, user.id]);
+    }
+
+    const token = crypto.randomBytes(32).toString("hex");
+    const tokenHash = hashToken(token);
+    const expiresAt = Math.floor(Date.now() / 1000) + SESSION_TTL_SECONDS;
+
+    await db.run(
+      "INSERT INTO sessions (user_id, token_hash, expires_at) VALUES (?, ?, ?)",
+      [user.id, tokenHash, expiresAt]
+    );
+
+    res.cookie(SESSION_COOKIE, token, buildSessionCookieOptions(req));
+    return res.json({ user: sanitizeUser(user) });
+  } catch (error) {
+    console.error(error);
+    return res.status(500).json({ error: "Login fehlgeschlagen." });
+  }
+});
+
+app.post("/api/auth/logout", async (req, res) => {
+  try {
+    const token = getSessionToken(req);
+    if (token) {
+      const db = await initDb();
+      await db.run("DELETE FROM sessions WHERE token_hash = ?", [hashToken(token)]);
+    }
+
+    res.clearCookie(SESSION_COOKIE, { path: "/" });
+    return res.status(204).send();
+  } catch (error) {
+    console.error(error);
+    return res.status(500).json({ error: "Logout fehlgeschlagen." });
+  }
+});
+
+app.post("/api/auth/register", async (req, res) => {
+  const email = sanitizeEmail(req.body?.email || "");
+  const password = String(req.body?.password || "");
+  const desiredRole = String(req.body?.role || "").toLowerCase();
+
+  if (!email || !email.includes("@")) {
+    return res.status(400).json({ error: "Bitte eine gültige E-Mail angeben." });
+  }
+
+  if (!password || password.length < PASSWORD_MIN_LENGTH) {
+    return res.status(400).json({ error: `Passwort muss mindestens ${PASSWORD_MIN_LENGTH} Zeichen haben.` });
+  }
+
+  try {
+    const db = await initDb();
+    const stats = await db.get("SELECT COUNT(*) AS count FROM users");
+    const hasUsers = (stats?.count || 0) > 0;
+    const allowRegistration = await getRegistrationSetting();
+    const existing = await db.get("SELECT id FROM users WHERE LOWER(email) = ?", [email]);
+    if (existing) {
+      return res.status(409).json({ error: "Diese E-Mail ist bereits registriert." });
+    }
+
+    let role = "user";
+    let creator = null;
+
+    if (!hasUsers) {
+      role = "admin";
+    } else {
+      creator = await getSessionUser(req);
+      if (creator && creator.role === "admin") {
+        if (ALLOWED_ROLES.includes(desiredRole)) {
+          role = desiredRole;
+        }
+      } else {
+        if (!allowRegistration) {
+          return res.status(403).json({ error: "Registrierung ist deaktiviert." });
+        }
+        role = "user";
+      }
+    }
+
+    const passwordHash = hashPassword(password);
+    const result = await db.run(
+      "INSERT INTO users (email, password_hash, role) VALUES (?, ?, ?)",
+      [email, passwordHash, role]
+    );
+
+    const created = await db.get("SELECT id, email, role FROM users WHERE id = ?", [result.lastID]);
+
+    if (!hasUsers) {
+      await db.run("UPDATE mangas SET user_id = ? WHERE user_id IS NULL", [created.id]);
+
+      const token = crypto.randomBytes(32).toString("hex");
+      const tokenHash = hashToken(token);
+      const expiresAt = Math.floor(Date.now() / 1000) + SESSION_TTL_SECONDS;
+
+      await db.run(
+        "INSERT INTO sessions (user_id, token_hash, expires_at) VALUES (?, ?, ?)",
+        [created.id, tokenHash, expiresAt]
+      );
+
+      res.cookie(SESSION_COOKIE, token, buildSessionCookieOptions(req));
+    }
+
+    return res.status(201).json({ user: sanitizeUser(created) });
+  } catch (error) {
+    if (String(error?.message || "").includes("UNIQUE")) {
+      return res.status(409).json({ error: "Diese E-Mail ist bereits registriert." });
+    }
+
+    console.error(error);
+    return res.status(500).json({ error: "Registrierung fehlgeschlagen." });
+  }
+});
+
+app.get("/api/settings/hardcover-token", requireAdmin, async (_req, res) => {
   try {
     const token = await getSetting(HARDCOVER_TOKEN_KEY);
     return res.json({ hasToken: Boolean(token), tokenPreview: buildTokenPreview(token) });
@@ -632,7 +971,7 @@ app.get("/api/settings/hardcover-token", async (_req, res) => {
   }
 });
 
-app.put("/api/settings/hardcover-token", async (req, res) => {
+app.put("/api/settings/hardcover-token", requireAdmin, async (req, res) => {
   const token = sanitizeText(req.body?.token || "", 4000);
 
   try {
@@ -644,7 +983,115 @@ app.put("/api/settings/hardcover-token", async (req, res) => {
   }
 });
 
-app.get("/api/hardcover/search", async (req, res) => {
+app.get("/api/admin/registration", requireAdmin, async (_req, res) => {
+  try {
+    const allowRegistration = await getRegistrationSetting();
+    return res.json({ allowRegistration });
+  } catch (error) {
+    console.error(error);
+    return res.status(500).json({ error: "Registrierungseinstellung konnte nicht geladen werden." });
+  }
+});
+
+app.put("/api/admin/registration", requireAdmin, async (req, res) => {
+  const rawValue = req.body?.allowRegistration;
+  const allowRegistration =
+    rawValue === true ||
+    rawValue === "true" ||
+    rawValue === 1 ||
+    rawValue === "1";
+
+  try {
+    await setRegistrationSetting(allowRegistration);
+    return res.json({ allowRegistration });
+  } catch (error) {
+    console.error(error);
+    return res.status(500).json({ error: "Registrierungseinstellung konnte nicht gespeichert werden." });
+  }
+});
+
+app.get("/api/admin/users", requireAdmin, async (_req, res) => {
+  try {
+    const db = await initDb();
+    const users = await db.all("SELECT id, email, role, created_at FROM users ORDER BY created_at ASC");
+    return res.json({ users });
+  } catch (error) {
+    console.error(error);
+    return res.status(500).json({ error: "Nutzer konnten nicht geladen werden." });
+  }
+});
+
+app.put("/api/admin/users/:id/role", requireAdmin, async (req, res) => {
+  const id = parseId(req.params.id);
+  if (id === null) {
+    return res.status(400).json({ error: "Ungültige Nutzer-ID." });
+  }
+
+  const role = String(req.body?.role || "").toLowerCase();
+  if (!ALLOWED_ROLES.includes(role)) {
+    return res.status(400).json({ error: "Ungültige Rolle." });
+  }
+
+  try {
+    const db = await initDb();
+    const user = await db.get("SELECT id, email, role FROM users WHERE id = ?", [id]);
+
+    if (!user) {
+      return res.status(404).json({ error: "Nutzer nicht gefunden." });
+    }
+
+    if (req.user && req.user.id === user.id && role !== "admin") {
+      return res.status(400).json({ error: "Du kannst dir selbst keine Rechte entziehen." });
+    }
+
+    if (user.role === "admin" && role !== "admin") {
+      const adminCount = await db.get("SELECT COUNT(*) AS count FROM users WHERE role = 'admin'");
+      if ((adminCount?.count || 0) <= 1) {
+        return res.status(400).json({ error: "Mindestens ein Admin muss erhalten bleiben." });
+      }
+    }
+
+    await db.run("UPDATE users SET role = ? WHERE id = ?", [role, id]);
+    const updated = await db.get("SELECT id, email, role, created_at FROM users WHERE id = ?", [id]);
+    return res.json({ user: updated });
+  } catch (error) {
+    console.error(error);
+    return res.status(500).json({ error: "Rolle konnte nicht aktualisiert werden." });
+  }
+});
+
+app.put("/api/admin/users/:id/password", requireAdmin, async (req, res) => {
+  const id = parseId(req.params.id);
+  if (id === null) {
+    return res.status(400).json({ error: "Ungültige Nutzer-ID." });
+  }
+
+  const password = String(req.body?.password || "");
+  if (!password || password.length < PASSWORD_MIN_LENGTH) {
+    return res
+      .status(400)
+      .json({ error: `Passwort muss mindestens ${PASSWORD_MIN_LENGTH} Zeichen haben.` });
+  }
+
+  try {
+    const db = await initDb();
+    const user = await db.get("SELECT id FROM users WHERE id = ?", [id]);
+
+    if (!user) {
+      return res.status(404).json({ error: "Nutzer nicht gefunden." });
+    }
+
+    const passwordHash = hashPassword(password);
+    await db.run("UPDATE users SET password_hash = ? WHERE id = ?", [passwordHash, id]);
+
+    return res.json({ ok: true });
+  } catch (error) {
+    console.error(error);
+    return res.status(500).json({ error: "Passwort konnte nicht gespeichert werden." });
+  }
+});
+
+app.get("/api/hardcover/search", requireAuth, async (req, res) => {
   const query = sanitizeText(req.query.query || "", 180);
   if (!query) {
     return res.status(400).json({ error: "Bitte einen Suchbegriff angeben." });
@@ -712,10 +1159,12 @@ app.get("/api/hardcover/search", async (req, res) => {
   }
 });
 
-app.get("/api/manga", async (_req, res) => {
+app.get("/api/manga", requireAuth, async (req, res) => {
   try {
     const db = await initDb();
-    const mangas = await db.all("SELECT * FROM mangas ORDER BY updated_at DESC, id DESC");
+    const mangas = await db.all("SELECT * FROM mangas WHERE user_id = ? ORDER BY updated_at DESC, id DESC", [
+      req.user.id
+    ]);
     res.json(mangas.map(normalizeMangaRow));
   } catch (error) {
     console.error(error);
@@ -723,7 +1172,7 @@ app.get("/api/manga", async (_req, res) => {
   }
 });
 
-app.get("/api/manga/:id", async (req, res) => {
+app.get("/api/manga/:id", requireAuth, async (req, res) => {
   const id = parseId(req.params.id);
   if (id === null) {
     return res.status(400).json({ error: "Ungültige ID." });
@@ -731,7 +1180,7 @@ app.get("/api/manga/:id", async (req, res) => {
 
   try {
     const db = await initDb();
-    const manga = await db.get("SELECT * FROM mangas WHERE id = ?", [id]);
+    const manga = await fetchMangaForUser(db, id, req.user);
 
     if (!manga) {
       return res.status(404).json({ error: "Manga nicht gefunden." });
@@ -743,7 +1192,7 @@ app.get("/api/manga/:id", async (req, res) => {
     return res.status(500).json({ error: "Fehler beim Laden des Manga-Eintrags." });
   }
 });
-app.post("/api/manga", async (req, res) => {
+app.post("/api/manga", requireAuth, async (req, res) => {
   const validation = validatePayload(req.body);
   if (validation.error) {
     return res.status(400).json({ error: validation.error });
@@ -751,6 +1200,7 @@ app.post("/api/manga", async (req, res) => {
 
   try {
     const db = await initDb();
+    const user = req.user;
     const {
       title,
       totalVolumes,
@@ -774,6 +1224,7 @@ app.post("/api/manga", async (req, res) => {
     const result = await db.run(
       `
       INSERT INTO mangas (
+        user_id,
         title,
         total_volumes,
         owned_volumes,
@@ -792,9 +1243,10 @@ app.post("/api/manga", async (req, res) => {
         pages,
         release_year
       )
-      VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?)
+      VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?)
       `,
       [
+        user.id,
         title,
         totalVolumes,
         ownedVolumes,
@@ -823,7 +1275,7 @@ app.post("/api/manga", async (req, res) => {
   }
 });
 
-app.put("/api/manga/:id", async (req, res) => {
+app.put("/api/manga/:id", requireAuth, async (req, res) => {
   const validation = validatePayload(req.body);
   if (validation.error) {
     return res.status(400).json({ error: validation.error });
@@ -836,6 +1288,12 @@ app.put("/api/manga/:id", async (req, res) => {
 
   try {
     const db = await initDb();
+    const user = req.user;
+    const existing = await fetchMangaForUser(db, id, user);
+    if (!existing) {
+      return res.status(404).json({ error: "Manga nicht gefunden." });
+    }
+
     const {
       title,
       totalVolumes,
@@ -876,7 +1334,7 @@ app.put("/api/manga/:id", async (req, res) => {
           ratings_count = ?,
           pages = ?,
           release_year = ?
-      WHERE id = ?
+      WHERE id = ? AND user_id = ?
       `,
       [
         title,
@@ -896,7 +1354,8 @@ app.put("/api/manga/:id", async (req, res) => {
         ratingsCount ?? null,
         pages ?? null,
         releaseYear ?? null,
-        id
+        id,
+        user.id
       ]
     );
 
@@ -912,7 +1371,7 @@ app.put("/api/manga/:id", async (req, res) => {
   }
 });
 
-app.patch("/api/manga/:id/volumes", async (req, res) => {
+app.patch("/api/manga/:id/volumes", requireAuth, async (req, res) => {
   const id = parseId(req.params.id);
   if (id === null) {
     return res.status(400).json({ error: "Ungültige ID." });
@@ -925,10 +1384,7 @@ app.patch("/api/manga/:id/volumes", async (req, res) => {
 
   try {
     const db = await initDb();
-    const manga = await db.get(
-      "SELECT id, media_type, owned_volumes, total_volumes, status FROM mangas WHERE id = ?",
-      [id]
-    );
+    const manga = await fetchMangaForUser(db, id, req.user);
 
     if (!manga) {
       return res.status(404).json({ error: "Manga nicht gefunden." });
@@ -976,7 +1432,7 @@ app.patch("/api/manga/:id/volumes", async (req, res) => {
   }
 });
 
-app.patch("/api/manga/:id/missing-volumes", async (req, res) => {
+app.patch("/api/manga/:id/missing-volumes", requireAuth, async (req, res) => {
   const id = parseId(req.params.id);
   if (id === null) {
     return res.status(400).json({ error: "Ungültige ID." });
@@ -984,7 +1440,7 @@ app.patch("/api/manga/:id/missing-volumes", async (req, res) => {
 
   try {
     const db = await initDb();
-    const manga = await db.get("SELECT id, media_type, owned_volumes, total_volumes FROM mangas WHERE id = ?", [id]);
+    const manga = await fetchMangaForUser(db, id, req.user);
 
     if (!manga) {
       return res.status(404).json({ error: "Manga nicht gefunden." });
@@ -1018,7 +1474,7 @@ app.patch("/api/manga/:id/missing-volumes", async (req, res) => {
   }
 });
 
-app.delete("/api/manga/:id", async (req, res) => {
+app.delete("/api/manga/:id", requireAuth, async (req, res) => {
   const id = parseId(req.params.id);
   if (id === null) {
     return res.status(400).json({ error: "Ungültige ID." });
@@ -1026,7 +1482,12 @@ app.delete("/api/manga/:id", async (req, res) => {
 
   try {
     const db = await initDb();
-    const result = await db.run("DELETE FROM mangas WHERE id = ?", [id]);
+    const existing = await fetchMangaForUser(db, id, req.user);
+    if (!existing) {
+      return res.status(404).json({ error: "Manga nicht gefunden." });
+    }
+
+    const result = await db.run("DELETE FROM mangas WHERE id = ? AND user_id = ?", [id, req.user.id]);
 
     if (result.changes === 0) {
       return res.status(404).json({ error: "Manga nicht gefunden." });
@@ -1055,6 +1516,14 @@ app.get("/settings", (_req, res) => {
   res.sendFile(path.join(__dirname, "..", "public", "settings.html"));
 });
 
+app.get("/login", (_req, res) => {
+  res.sendFile(path.join(__dirname, "..", "public", "login.html"));
+});
+
+app.get("/register", (_req, res) => {
+  res.sendFile(path.join(__dirname, "..", "public", "register.html"));
+});
+
 app.use((req, res) => {
   if (req.path.startsWith("/api/")) {
     return res.status(404).json({ error: "API-Route nicht gefunden." });
@@ -1075,5 +1544,43 @@ start().catch((error) => {
   console.error("Serverstart fehlgeschlagen:", error);
   process.exit(1);
 });
+
+
+
+
+
+
+
+
+
+
+
+
+
+
+
+
+
+
+
+
+
+
+
+
+
+
+
+
+
+
+
+
+
+
+
+
+
+
 
 

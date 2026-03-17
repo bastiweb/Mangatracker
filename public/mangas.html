@@ -6,6 +6,7 @@
     <title>Manga Tracker - Übersicht</title>
     <link rel="stylesheet" href="/styles.css" />
     <script src="/theme.js" defer></script>
+    <script src="/auth.js" defer></script>
     <script src="/mangas.js" defer></script>
   </head>
   <body>
@@ -17,6 +18,11 @@
           <a href="/create">Erfassen</a>
           <a href="/settings">Settings</a>
         </nav>
+        <div class="user-panel">
+          <span id="user-email" class="muted"></span>
+          <span id="admin-badge" class="badge admin-badge" hidden>Admin</span>
+          <button id="logout-btn" class="secondary" type="button">Logout</button>
+        </div>
         <button id="theme-toggle" class="secondary" type="button" aria-pressed="false">Darkmode</button>
       </div>
     </header>
@@ -102,5 +108,6 @@
     </template>
   </body>
 </html>
+
 
 

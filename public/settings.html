@@ -6,6 +6,7 @@
     <title>Manga Tracker - Settings</title>
     <link rel="stylesheet" href="/styles.css" />
     <script src="/theme.js" defer></script>
+    <script src="/auth.js" defer></script>
     <script src="/settings.js" defer></script>
   </head>
   <body>
@@ -17,6 +18,11 @@
           <a href="/create">Erfassen</a>
           <a class="active" href="/settings">Settings</a>
         </nav>
+        <div class="user-panel">
+          <span id="user-email" class="muted"></span>
+          <span id="admin-badge" class="badge admin-badge" hidden>Admin</span>
+          <button id="logout-btn" class="secondary" type="button">Logout</button>
+        </div>
         <button id="theme-toggle" class="secondary" type="button" aria-pressed="false">Darkmode</button>
       </div>
     </header>
@@ -42,6 +48,78 @@
         <p id="token-status" class="muted"></p>
         <p id="message" class="message" aria-live="polite"></p>
       </section>
+
+      <section class="panel admin-panel" id="admin-panel" hidden>
+        <div class="section-header">
+          <div>
+            <h2>Admin-Einstellungen</h2>
+            <p class="muted">Verwalte Registrierung, Passwörter und Benutzerrollen.</p>
+          </div>
+          <button id="refresh-users" class="secondary" type="button">Aktualisieren</button>
+        </div>
+
+        <div class="toggle-row reset-row">
+          <div>
+            <h3>Passwort zurücksetzen</h3>
+            <p class="muted">Setzt das Passwort eines Nutzers neu.</p>
+          </div>
+          <form id="password-reset-form" class="reset-form">
+            <label class="sr-only" for="reset-user">Nutzer</label>
+            <select id="reset-user"></select>
+            <label class="sr-only" for="reset-password">Neues Passwort</label>
+            <input id="reset-password" type="password" placeholder="Neues Passwort" autocomplete="new-password" required />
+            <label class="sr-only" for="reset-password-confirm">Passwort wiederholen</label>
+            <input
+              id="reset-password-confirm"
+              type="password"
+              placeholder="Passwort wiederholen"
+              autocomplete="new-password"
+              required
+            />
+            <button type="submit">Passwort setzen</button>
+          </form>
+        </div>
+
+        <div class="toggle-row">
+          <div>
+            <h3>Registrierung</h3>
+            <p class="muted">Steuert, ob neue Nutzer sich selbst registrieren dürfen.</p>
+          </div>
+          <label class="switch">
+            <input id="registration-toggle" type="checkbox" />
+            <span class="slider"></span>
+          </label>
+        </div>
+
+        <div class="table-wrap">
+          <table class="manga-table user-table">
+            <thead>
+              <tr>
+                <th>E-Mail</th>
+                <th>Rolle</th>
+                <th>Erstellt</th>
+                <th>Aktion</th>
+              </tr>
+            </thead>
+            <tbody id="user-table-body"></tbody>
+          </table>
+        </div>
+
+        <p id="users-empty" class="muted" hidden>Keine Nutzer gefunden.</p>
+        <p id="users-message" class="message" aria-live="polite"></p>
+      </section>
     </main>
+
+    <div id="modal-overlay" class="modal-overlay" hidden>
+      <div class="modal">
+        <h3>Passwort wirklich setzen?</h3>
+        <p class="muted" id="modal-text"></p>
+        <div class="actions">
+          <button id="modal-confirm" type="button">Bestätigen</button>
+          <button id="modal-cancel" class="secondary" type="button">Abbrechen</button>
+        </div>
+      </div>
+    </div>
   </body>
 </html>
+

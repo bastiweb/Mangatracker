@@ -1,0 +1,42 @@
+<!DOCTYPE html>
+<html lang="de">
+  <head>
+    <meta charset="UTF-8" />
+    <meta name="viewport" content="width=device-width, initial-scale=1.0" />
+    <title>Manga Tracker - Login</title>
+    <link rel="stylesheet" href="/styles.css" />
+    <script src="/theme.js" defer></script>
+    <script src="/login.js" defer></script>
+  </head>
+  <body>
+    <header class="topbar">
+      <div class="container topbar-inner">
+        <a class="brand" href="/">Manga Tracker</a>
+        <div class="spacer"></div>
+        <button id="theme-toggle" class="secondary" type="button" aria-pressed="false">Darkmode</button>
+      </div>
+    </header>
+
+    <main class="container page-grid">
+      <section class="panel auth-panel">
+        <h1>Login</h1>
+        <form id="login-form">
+          <label for="email">E-Mail</label>
+          <input id="email" name="email" type="email" autocomplete="email" required />
+
+          <label for="password">Passwort</label>
+          <input id="password" name="password" type="password" autocomplete="current-password" required />
+
+          <div class="actions">
+            <button type="submit">Einloggen</button>
+          </div>
+        </form>
+
+        <p id="message" class="message" aria-live="polite"></p>
+        <p id="register-hint" class="muted" hidden>
+          Noch kein Konto? <a href="/register.html">Registrieren</a>
+        </p>
+      </section>
+    </main>
+  </body>
+</html>

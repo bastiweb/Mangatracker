@@ -1,0 +1,4 @@
+mangatracker.local, localhost {
+  tls internal
+  reverse_proxy manga-tracker:3003
+}

@@ -4,9 +4,11 @@ Web-App zum Verwalten deiner Manga-Serien und Bücher mit SQLite-Datenbank, Hard
 
 ## Seiten
 
-- `/` Übersicht mit Suche, Sortierung, Quick-Add und fehlenden Bänden
+- `/` Übersicht mit Suche, Sortierung, Filter und fehlenden Bänden
 - `/create` Erfassung/Bearbeitung von Manga-Serien und Büchern
 - `/settings` Einstellungen für Hardcover API Token
+- `/login` Login
+- `/register` Registrierung (nur beim ersten Setup oder als Admin)
 
 ## Funktionen
 
@@ -14,11 +16,11 @@ Web-App zum Verwalten deiner Manga-Serien und Bücher mit SQLite-Datenbank, Hard
 - Medientyp wählen (Manga oder Buch)
 - Suchfunktion in der Übersicht (Titel, Autor, Notizen, Status)
 - Sortierfunktion (zuletzt geändert, Titel, vorhandene Bände)
-- Quick-Add von Bänden (`+1`, `+5`)
 - Fehlende Bände explizit markieren (pro Band auswählbar)
 - Hardcover-Suche mit Auswahl von Autor + Cover
 - Persistente Speicherung des Hardcover API Tokens in der Datenbank
 - Darkmode mit manuellem Umschalter
+- Multi-User-Login (Admin/Nutzer) mit Sessions
 
 ## Hardcover API
 
@@ -44,6 +46,7 @@ npm start
 ```
 
 Danach ist die App unter [http://localhost:3003](http://localhost:3003) erreichbar.
+HTTPS gibt es in der lokalen Node-Variante nicht, dafür den Docker-Setup mit Caddy nutzen.
 
 ## Docker Build & Run
 
@@ -51,7 +54,38 @@ Danach ist die App unter [http://localhost:3003](http://localhost:3003) erreichb
 docker compose up --build -d
 ```
 
-Dann läuft die App unter [http://localhost:3003](http://localhost:3003).
+Dann läuft die App über Caddy unter [https://localhost](https://localhost).
+
+## HTTPS lokal (Caddy)
+
+Der Docker-Setup bringt einen Caddy-Reverse-Proxy mit lokalem TLS mit. Damit dein Browser `https://localhost` akzeptiert,
+muss das Caddy-Root-Zertifikat einmalig importiert werden.
+
+### 1) Caddy-Root-Zertifikat exportieren
+
+```bash
+docker cp manga-tracker-caddy:/data/caddy/pki/authorities/local/root.crt .\caddy-root.crt
+```
+
+### 2) Zertifikat als vertrauenswürdig installieren (Windows)
+
+PowerShell als Administrator:
+
+```powershell
+Import-Certificate -FilePath .\caddy-root.crt -CertStoreLocation Cert:\LocalMachine\Root
+```
+
+Danach sollte `https://localhost` ohne Zertifikatsfehler funktionieren.
+
+### 3) Optional: `mangatracker.local` aktivieren
+
+Wenn du `https://mangatracker.local` nutzen möchtest, ergänze die Hosts-Datei:
+
+```
+127.0.0.1 mangatracker.local
+```
+
+Datei: `C:\Windows\System32\drivers\etc\hosts` (Editor als Administrator öffnen).
 
 ### Datenpersistenz
 
@@ -75,9 +109,16 @@ Start vom veröffentlichten Image:
 docker run -d -p 3003:3003 -e DB_FILE=/data/manga.db -v manga_data:/data DEIN_USER/manga-tracker:latest
 ```
 
+Hinweis: Das Image allein liefert HTTP auf Port `3003`. Für HTTPS nutze den `docker-compose.yml` mit Caddy.
+
 ## API-Endpunkte
 
 - `GET /api/health`
+- `GET /api/auth/bootstrap`
+- `GET /api/auth/me`
+- `POST /api/auth/login`
+- `POST /api/auth/logout`
+- `POST /api/auth/register`
 - `GET /api/manga`
 - `GET /api/manga/:id`
 - `POST /api/manga`
