@@ -3,6 +3,12 @@ const tokenInput = document.getElementById("token");
 const clearBtn = document.getElementById("clear-token-btn");
 const tokenStatus = document.getElementById("token-status");
 const message = document.getElementById("message");
+const exportBtn = document.getElementById("export-csv-btn");
+const exportMessage = document.getElementById("export-message");
+const importBtn = document.getElementById("import-csv-btn");
+const previewBtn = document.getElementById("preview-csv-btn");
+const importFileInput = document.getElementById("import-file");
+const importMessage = document.getElementById("import-message");
 const adminPanel = document.getElementById("admin-panel");
 const registrationToggle = document.getElementById("registration-toggle");
 const refreshUsersBtn = document.getElementById("refresh-users");
@@ -28,6 +34,24 @@ if (modalOverlay) {
 function setMessage(text, isError = false) {
   message.textContent = text;
   message.style.color = isError ? "var(--danger)" : "var(--muted)";
+}
+
+function setExportMessage(text, isError = false) {
+  if (!exportMessage) {
+    return;
+  }
+
+  exportMessage.textContent = text;
+  exportMessage.style.color = isError ? "var(--danger)" : "var(--muted)";
+}
+
+function setImportMessage(text, isError = false) {
+  if (!importMessage) {
+    return;
+  }
+
+  importMessage.textContent = text;
+  importMessage.style.color = isError ? "var(--danger)" : "var(--muted)";
 }
 
 function setTokenFormEnabled(enabled) {
@@ -241,6 +265,104 @@ clearBtn.addEventListener("click", async () => {
   }
 });
 
+exportBtn?.addEventListener("click", async () => {
+  try {
+    setExportMessage("Export wird erstellt...");
+    const response = await fetch("/api/export/csv");
+    if (!response.ok) {
+      const data = await response.json().catch(() => ({}));
+      throw new Error(data.error || "Export fehlgeschlagen.");
+    }
+
+    const blob = await response.blob();
+    const url = window.URL.createObjectURL(blob);
+    const link = document.createElement("a");
+    const date = new Date().toISOString().slice(0, 10);
+    link.href = url;
+    link.download = `manga-export-${date}.csv`;
+    document.body.appendChild(link);
+    link.click();
+    link.remove();
+    window.URL.revokeObjectURL(url);
+    setExportMessage("Export bereit.");
+  } catch (error) {
+    setExportMessage(error.message, true);
+  }
+});
+
+importBtn?.addEventListener("click", async () => {
+  if (!importFileInput || !importFileInput.files || importFileInput.files.length === 0) {
+    setImportMessage("Bitte zuerst eine CSV-Datei auswählen.", true);
+    return;
+  }
+
+  const file = importFileInput.files[0];
+  setImportMessage("Import läuft...");
+
+  try {
+    const csvText = await file.text();
+    const response = await fetch("/api/import/csv", {
+      method: "POST",
+      headers: { "Content-Type": "text/csv" },
+      body: csvText
+    });
+
+    const data = await response.json().catch(() => ({}));
+    if (!response.ok) {
+      throw new Error(data.error || "Import fehlgeschlagen.");
+    }
+
+    const imported = data.imported ?? 0;
+    const skipped = data.skipped ?? 0;
+    let info = `Import abgeschlossen: ${imported} übernommen, ${skipped} übersprungen.`;
+    if (Array.isArray(data.errors) && data.errors.length > 0) {
+      info += ` Erste Fehler: ${data.errors.join(" | ")}`;
+    }
+    setImportMessage(info, skipped > 0);
+    importFileInput.value = "";
+  } catch (error) {
+    setImportMessage(error.message, true);
+  }
+});
+
+previewBtn?.addEventListener("click", async () => {
+  if (!importFileInput || !importFileInput.files || importFileInput.files.length === 0) {
+    setImportMessage("Bitte zuerst eine CSV-Datei auswählen.", true);
+    return;
+  }
+
+  const file = importFileInput.files[0];
+  setImportMessage("CSV wird geprüft...");
+
+  try {
+    const csvText = await file.text();
+    const response = await fetch("/api/import/csv/preview", {
+      method: "POST",
+      headers: { "Content-Type": "text/csv" },
+      body: csvText
+    });
+
+    const data = await response.json().catch(() => ({}));
+    if (!response.ok) {
+      throw new Error(data.error || "CSV-Prüfung fehlgeschlagen.");
+    }
+
+    const total = data.total ?? 0;
+    const newCount = data.newCount ?? 0;
+    const duplicateCount = data.duplicateCount ?? 0;
+    let info = `Vorschau: ${total} Zeilen, ${newCount} neu, ${duplicateCount} Dubletten.`;
+    if (Array.isArray(data.duplicates) && data.duplicates.length > 0) {
+      info += ` Beispiele: ${data.duplicates.join(" | ")}`;
+    }
+    if (Array.isArray(data.errors) && data.errors.length > 0) {
+      info += ` Fehler: ${data.errors.join(" | ")}`;
+    }
+    setImportMessage(info, duplicateCount > 0);
+  } catch (error) {
+    setImportMessage(error.message, true);
+  }
+});
+
 registrationToggle?.addEventListener("change", async () => {
   try {
     setUsersMessage("Registrierung wird gespeichert...");
@@ -341,23 +463,29 @@ MangaTheme.init();
   try {
     currentUser = await loadCurrentUser();
 
-    if (!currentUser || currentUser.role !== "admin") {
+    const isAdmin = currentUser && currentUser.role === "admin";
+
+    if (!isAdmin) {
       adminPanel.hidden = true;
       closeModal();
       setTokenFormEnabled(false);
-      setMessage("Nur Admins können die Settings bearbeiten.", true);
-      return;
+      setMessage("Nur Admins können Hardcover-Token und Admin-Einstellungen bearbeiten.", true);
+    } else {
+      adminPanel.hidden = false;
+      setTokenFormEnabled(true);
+      await loadTokenStatus();
+      await loadRegistrationSetting();
+      await loadUsers();
+      setMessage("Bereit.");
+      setUsersMessage("Bereit.");
     }
 
-    adminPanel.hidden = false;
-    setTokenFormEnabled(true);
-    await loadTokenStatus();
-    await loadRegistrationSetting();
-    await loadUsers();
-    setMessage("Bereit.");
-    setUsersMessage("Bereit.");
+    setExportMessage("Bereit.");
+    setImportMessage("Bereit.");
   } catch (error) {
     setMessage(error.message, true);
     setUsersMessage(error.message, true);
+    setExportMessage(error.message, true);
+    setImportMessage(error.message, true);
   }
 })();

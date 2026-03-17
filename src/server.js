@@ -16,6 +16,12 @@ const REGISTRATION_SETTING_KEY = "allow_registration";
 const HARDCOVER_ENDPOINT = "https://api.hardcover.app/v1/graphql";
 
 app.use(express.json());
+app.use(
+  express.text({
+    type: ["text/*", "application/csv", "text/csv"],
+    limit: "5mb"
+  })
+);
 app.use(express.static(path.join(__dirname, "..", "public"), { index: false }));
 
 function parsePositiveInt(value) {
@@ -331,8 +337,136 @@ function normalizeMangaRow(row) {
     rating: row.rating ?? null,
     ratings_count: row.ratings_count ?? null,
     pages: row.pages ?? null,
-    release_year: row.release_year ?? null
+    release_year: row.release_year ?? null,
+    user_rating: row.user_rating ?? null,
+    user_review: row.user_review ?? ""
   };
+}
+
+function toCsvValue(value) {
+  if (value === null || value === undefined) {
+    return "";
+  }
+
+  const stringValue = String(value);
+  if (stringValue.includes("\"") || stringValue.includes(",") || stringValue.includes("\n") || stringValue.includes("\r")) {
+    return `"${stringValue.replace(/"/g, "\"\"")}"`;
+  }
+
+  return stringValue;
+}
+
+function joinCsvArray(value) {
+  if (!Array.isArray(value) || value.length === 0) {
+    return "";
+  }
+
+  return value.join(" | ");
+}
+
+function parseCsv(content) {
+  if (typeof content !== "string") {
+    return [];
+  }
+
+  const text = content.replace(/^\uFEFF/, "");
+  const rows = [];
+  let row = [];
+  let field = "";
+  let inQuotes = false;
+
+  for (let i = 0; i < text.length; i += 1) {
+    const char = text[i];
+
+    if (inQuotes) {
+      if (char === "\"") {
+        if (text[i + 1] === "\"") {
+          field += "\"";
+          i += 1;
+        } else {
+          inQuotes = false;
+        }
+      } else {
+        field += char;
+      }
+      continue;
+    }
+
+    if (char === "\"") {
+      inQuotes = true;
+      continue;
+    }
+
+    if (char === ",") {
+      row.push(field);
+      field = "";
+      continue;
+    }
+
+    if (char === "\n") {
+      row.push(field);
+      rows.push(row);
+      row = [];
+      field = "";
+      continue;
+    }
+
+    if (char === "\r") {
+      continue;
+    }
+
+    field += char;
+  }
+
+  if (field.length > 0 || row.length > 0) {
+    row.push(field);
+    rows.push(row);
+  }
+
+  return rows.filter((entries) => entries.some((entry) => String(entry || "").trim() !== ""));
+}
+
+function parseCsvList(value, maxLength = 60) {
+  if (!value) {
+    return [];
+  }
+
+  return String(value)
+    .split("|")
+    .map((entry) => sanitizeText(entry, maxLength))
+    .map((entry) => entry.trim())
+    .filter(Boolean);
+}
+
+function parseCsvNumbers(value) {
+  if (!value) {
+    return [];
+  }
+
+  return String(value)
+    .split("|")
+    .map((entry) => Number(entry.trim()))
+    .filter((entry) => Number.isInteger(entry) && entry > 0);
+}
+
+function buildImportKey(title, mediaType) {
+  return `${String(mediaType || "").toLowerCase()}::${String(title || "").trim().toLowerCase()}`;
+}
+
+function validateReviewPayload(payload) {
+  const ratingRaw = payload?.userRating;
+  const review = sanitizeText(payload?.userReview || "", 1200);
+
+  if (ratingRaw === null || ratingRaw === undefined || ratingRaw === "") {
+    return { value: { userRating: null, userReview: review || "" } };
+  }
+
+  const rating = Number(ratingRaw);
+  if (!Number.isInteger(rating) || rating < 1 || rating > 5) {
+    return { error: "Bewertung muss zwischen 1 und 5 liegen." };
+  }
+
+  return { value: { userRating: rating, userReview: review || "" } };
 }
 
 function validatePayload(payload) {
@@ -1091,6 +1225,310 @@ app.put("/api/admin/users/:id/password", requireAdmin, async (req, res) => {
   }
 });
 
+app.get("/api/export/csv", requireAuth, async (req, res) => {
+  try {
+    const db = await initDb();
+    const rows = await db.all("SELECT * FROM mangas WHERE user_id = ? ORDER BY updated_at DESC, id DESC", [
+      req.user.id
+    ]);
+
+    const normalized = rows.map(normalizeMangaRow);
+    const headers = [
+      "title",
+      "media_type",
+      "status",
+      "owned_volumes",
+      "total_volumes",
+      "missing_volumes",
+      "cover_url",
+      "hardcover_book_id",
+      "author_name",
+      "notes",
+      "genres",
+      "moods",
+      "content_warnings",
+      "rating",
+      "ratings_count",
+      "pages",
+      "release_year",
+      "user_rating",
+      "user_review",
+      "created_at",
+      "updated_at"
+    ];
+
+    const lines = [headers.join(",")];
+
+    normalized.forEach((manga) => {
+      const values = [
+        manga.title,
+        manga.media_type,
+        manga.status,
+        manga.owned_volumes,
+        manga.total_volumes ?? "",
+        joinCsvArray(manga.missing_volumes),
+        manga.cover_url || "",
+        manga.hardcover_book_id || "",
+        manga.author_name,
+        manga.notes,
+        joinCsvArray(manga.genres),
+        joinCsvArray(manga.moods),
+        joinCsvArray(manga.content_warnings),
+        manga.rating ?? "",
+        manga.ratings_count ?? "",
+        manga.pages ?? "",
+        manga.release_year ?? "",
+        manga.user_rating ?? "",
+        manga.user_review ?? "",
+        manga.created_at || "",
+        manga.updated_at || ""
+      ];
+
+      lines.push(values.map(toCsvValue).join(","));
+    });
+
+    const csv = `\uFEFF${lines.join("\n")}`;
+    const dateStamp = new Date().toISOString().slice(0, 10);
+
+    res.setHeader("Content-Type", "text/csv; charset=utf-8");
+    res.setHeader("Content-Disposition", `attachment; filename="manga-export-${dateStamp}.csv"`);
+    return res.send(csv);
+  } catch (error) {
+    console.error(error);
+    return res.status(500).json({ error: "CSV-Export fehlgeschlagen." });
+  }
+});
+
+app.post("/api/import/csv/preview", requireAuth, async (req, res) => {
+  try {
+    const csvText = typeof req.body === "string" ? req.body : "";
+    if (!csvText.trim()) {
+      return res.status(400).json({ error: "CSV-Datei ist leer." });
+    }
+
+    const rows = parseCsv(csvText);
+    if (rows.length < 2) {
+      return res.status(400).json({ error: "CSV enthält keine Daten." });
+    }
+
+    const headerRow = rows[0].map((entry) => String(entry || "").trim().toLowerCase());
+    const headerIndex = headerRow.reduce((acc, header, index) => {
+      if (header) {
+        acc[header] = index;
+      }
+      return acc;
+    }, {});
+
+    if (headerIndex.title === undefined) {
+      return res.status(400).json({ error: "CSV benötigt eine Spalte 'title'." });
+    }
+
+    const db = await initDb();
+    const existingRows = await db.all("SELECT title, media_type FROM mangas WHERE user_id = ?", [req.user.id]);
+    const existingKeys = new Set(
+      existingRows.map((row) => buildImportKey(row.title, row.media_type || "manga"))
+    );
+    const seenKeys = new Set();
+
+    let total = 0;
+    let newCount = 0;
+    let duplicateCount = 0;
+    const duplicates = [];
+    const errors = [];
+
+    for (let i = 1; i < rows.length; i += 1) {
+      const row = rows[i];
+      const getValue = (key) => row[headerIndex[key]] ?? "";
+
+      const title = sanitizeText(getValue("title"), 120);
+      if (!title) {
+        continue;
+      }
+
+      const rawMediaType = sanitizeText(getValue("media_type") || "manga", 20).toLowerCase();
+      const mediaType = ALLOWED_MEDIA_TYPES.includes(rawMediaType) ? rawMediaType : "manga";
+      const key = buildImportKey(title, mediaType);
+
+      total += 1;
+
+      if (existingKeys.has(key) || seenKeys.has(key)) {
+        duplicateCount += 1;
+        if (duplicates.length < 5) {
+          duplicates.push(`${title} (${mediaType})`);
+        }
+        continue;
+      }
+
+      seenKeys.add(key);
+      newCount += 1;
+    }
+
+    return res.json({ total, newCount, duplicateCount, duplicates, errors });
+  } catch (error) {
+    console.error(error);
+    return res.status(500).json({ error: "CSV-Prüfung fehlgeschlagen." });
+  }
+});
+
+app.post("/api/import/csv", requireAuth, async (req, res) => {
+  try {
+    const csvText = typeof req.body === "string" ? req.body : "";
+    if (!csvText.trim()) {
+      return res.status(400).json({ error: "CSV-Datei ist leer." });
+    }
+
+    const rows = parseCsv(csvText);
+    if (rows.length < 2) {
+      return res.status(400).json({ error: "CSV enthält keine Daten." });
+    }
+
+    const headerRow = rows[0].map((entry) => String(entry || "").trim().toLowerCase());
+    const headerIndex = headerRow.reduce((acc, header, index) => {
+      if (header) {
+        acc[header] = index;
+      }
+      return acc;
+    }, {});
+
+    if (headerIndex.title === undefined) {
+      return res.status(400).json({ error: "CSV benötigt eine Spalte 'title'." });
+    }
+
+    const db = await initDb();
+    const existingRows = await db.all("SELECT title, media_type FROM mangas WHERE user_id = ?", [req.user.id]);
+    const existingKeys = new Set(
+      existingRows.map((row) => buildImportKey(row.title, row.media_type || "manga"))
+    );
+    const seenKeys = new Set();
+
+    let imported = 0;
+    let skipped = 0;
+    const errors = [];
+
+    for (let i = 1; i < rows.length; i += 1) {
+      const row = rows[i];
+      const getValue = (key) => row[headerIndex[key]] ?? "";
+
+      const title = sanitizeText(getValue("title"), 120);
+      if (!title) {
+        skipped += 1;
+        continue;
+      }
+
+      const rawMediaType = sanitizeText(getValue("media_type") || "manga", 20).toLowerCase();
+      const mediaType = ALLOWED_MEDIA_TYPES.includes(rawMediaType) ? rawMediaType : "manga";
+      const dedupeKey = buildImportKey(title, mediaType);
+      if (existingKeys.has(dedupeKey) || seenKeys.has(dedupeKey)) {
+        skipped += 1;
+        continue;
+      }
+
+      let status = sanitizeText(getValue("status") || "Sammle", 40);
+      if (!ALLOWED_STATUS.includes(status)) {
+        status = "Sammle";
+      }
+
+      let ownedVolumes = parseNonNegativeInt(getValue("owned_volumes"));
+      let totalVolumes = parseOptionalInt(getValue("total_volumes"));
+      let missingVolumes = parseCsvNumbers(getValue("missing_volumes"));
+
+      if (mediaType === "book") {
+        ownedVolumes = 1;
+        totalVolumes = 1;
+        missingVolumes = [];
+      } else {
+        if (ownedVolumes === null) {
+          ownedVolumes = 0;
+        }
+
+        if (totalVolumes !== null && totalVolumes < ownedVolumes) {
+          totalVolumes = ownedVolumes;
+        }
+
+        missingVolumes = normalizeMissingVolumes(missingVolumes, totalVolumes);
+      }
+
+      const authorName = sanitizeText(getValue("author_name"), 200);
+      const notes = sanitizeText(getValue("notes"), 600);
+      const coverUrl = sanitizeText(getValue("cover_url"), 600);
+      const hardcoverBookId = sanitizeText(getValue("hardcover_book_id"), 80);
+      const genres = parseCsvList(getValue("genres"), 60);
+      const moods = parseCsvList(getValue("moods"), 40);
+      const contentWarnings = parseCsvList(getValue("content_warnings"), 60);
+      const rating = parseOptionalFloat(getValue("rating"), 5);
+      const ratingsCount = parseOptionalInt(getValue("ratings_count"));
+      const pages = parseOptionalInt(getValue("pages"));
+      const releaseYear = parseOptionalInt(getValue("release_year"));
+      const userRatingRaw = parseOptionalInt(getValue("user_rating"));
+      const userRating =
+        userRatingRaw !== null && userRatingRaw >= 1 && userRatingRaw <= 5 ? userRatingRaw : null;
+      const userReview = sanitizeText(getValue("user_review"), 1200);
+
+      try {
+        await db.run(
+          `
+            INSERT INTO mangas (
+              user_id,
+              title,
+              total_volumes,
+              owned_volumes,
+              status,
+              notes,
+              media_type,
+              author_name,
+              cover_url,
+              hardcover_book_id,
+              missing_volumes,
+              genres,
+              moods,
+              content_warnings,
+              rating,
+              ratings_count,
+              pages,
+              release_year,
+              user_rating,
+              user_review
+            )
+            VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?)
+          `,
+          [
+            req.user.id,
+            title,
+            totalVolumes,
+            ownedVolumes,
+            status,
+            notes || null,
+            mediaType,
+            authorName || null,
+            coverUrl || null,
+            hardcoverBookId || null,
+            JSON.stringify(missingVolumes),
+            JSON.stringify(genres),
+            JSON.stringify(moods),
+            JSON.stringify(contentWarnings),
+            rating ?? null,
+            ratingsCount ?? null,
+            pages ?? null,
+            releaseYear ?? null,
+            userRating ?? null,
+            userReview || null
+          ]
+        );
+        imported += 1;
+        seenKeys.add(dedupeKey);
+      } catch (error) {
+        skipped += 1;
+        errors.push(`Zeile ${i + 1}: ${error.message || "Import fehlgeschlagen"}`);
+      }
+    }
+
+    return res.json({ imported, skipped, errors: errors.slice(0, 10) });
+  } catch (error) {
+    console.error(error);
+    return res.status(500).json({ error: "CSV-Import fehlgeschlagen." });
+  }
+});
+
 app.get("/api/hardcover/search", requireAuth, async (req, res) => {
   const query = sanitizeText(req.query.query || "", 180);
   if (!query) {
@@ -1471,6 +1909,41 @@ app.patch("/api/manga/:id/missing-volumes", requireAuth, async (req, res) => {
   } catch (error) {
     console.error(error);
     return res.status(500).json({ error: "Fehlende Bände konnten nicht gespeichert werden." });
+  }
+});
+
+app.patch("/api/manga/:id/review", requireAuth, async (req, res) => {
+  const id = parseId(req.params.id);
+  if (id === null) {
+    return res.status(400).json({ error: "Ungültige ID." });
+  }
+
+  const validation = validateReviewPayload(req.body);
+  if (validation.error) {
+    return res.status(400).json({ error: validation.error });
+  }
+
+  try {
+    const db = await initDb();
+    const manga = await fetchMangaForUser(db, id, req.user);
+
+    if (!manga) {
+      return res.status(404).json({ error: "Manga nicht gefunden." });
+    }
+
+    const { userRating, userReview } = validation.value;
+    await db.run("UPDATE mangas SET user_rating = ?, user_review = ? WHERE id = ? AND user_id = ?", [
+      userRating,
+      userReview || null,
+      id,
+      req.user.id
+    ]);
+
+    const updated = await db.get("SELECT * FROM mangas WHERE id = ?", [id]);
+    return res.json(normalizeMangaRow(updated));
+  } catch (error) {
+    console.error(error);
+    return res.status(500).json({ error: "Bewertung konnte nicht gespeichert werden." });
   }
 });
 

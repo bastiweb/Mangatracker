@@ -6,6 +6,7 @@
   --muted: #586069;
   --accent: #0f766e;
   --accent-dark: #115e59;
+  --rating-accent: #2563eb;
   --border: #d8dee4;
   --danger: #b42318;
   --danger-soft: #fee4e2;
@@ -24,6 +25,7 @@
   --muted: #a2afb8;
   --accent: #22b8ab;
   --accent-dark: #7de1d8;
+  --rating-accent: #60a5fa;
   --border: #28343b;
   --danger: #ff6b6b;
   --danger-soft: #3b2024;
@@ -525,6 +527,11 @@ button.quick {
   font-size: 0.88rem;
 }
 
+.review-line {
+  margin: 0.35rem 0 0;
+  font-size: 0.86rem;
+}
+
 .meta-line {
   margin: 0;
   font-size: 0.78rem;
@@ -659,6 +666,31 @@ button.quick {
 
 .modal h3 {
   margin-top: 0;
+}
+
+.star-row {
+  display: flex;
+  gap: 0.35rem;
+  margin: 0.4rem 0 0.6rem;
+}
+
+.star-button {
+  width: 34px;
+  height: 34px;
+  border-radius: 10px;
+  border: 1px solid var(--border);
+  background: var(--button-soft);
+  font-size: 1.05rem;
+  color: var(--muted);
+  display: inline-flex;
+  align-items: center;
+  justify-content: center;
+}
+
+.star-button.active {
+  color: var(--rating-accent);
+  border-color: color-mix(in srgb, var(--rating-accent) 65%, var(--border));
+  background: color-mix(in srgb, var(--rating-accent) 14%, var(--button-soft));
 }
 
 .switch {

@@ -166,6 +166,8 @@ async function initDb() {
   await ensureColumn("mangas", "ratings_count", "ratings_count INTEGER");
   await ensureColumn("mangas", "pages", "pages INTEGER");
   await ensureColumn("mangas", "release_year", "release_year INTEGER");
+  await ensureColumn("mangas", "user_rating", "user_rating INTEGER");
+  await ensureColumn("mangas", "user_review", "user_review TEXT");
   await ensureColumn("mangas", "user_id", "user_id INTEGER");
 
   await db.run("UPDATE mangas SET media_type = LOWER(TRIM(media_type)) WHERE media_type IS NOT NULL");

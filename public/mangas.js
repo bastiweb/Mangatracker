@@ -6,6 +6,14 @@ const emptyState = document.getElementById("empty-state");
 const count = document.getElementById("count");
 const message = document.getElementById("message");
 const template = document.getElementById("manga-row-template");
+const reviewModal = document.getElementById("review-modal");
+const reviewTitle = document.getElementById("review-title");
+const reviewStars = Array.from(document.querySelectorAll("#review-stars .star-button"));
+const reviewHint = document.getElementById("review-hint");
+const reviewText = document.getElementById("review-text");
+const reviewSaveBtn = document.getElementById("review-save");
+const reviewClearBtn = document.getElementById("review-clear");
+const reviewCancelBtn = document.getElementById("review-cancel");
 
 const state = {
   mangas: [],
@@ -13,6 +21,10 @@ const state = {
   sort: "updated_desc",
   genre: "all"
 };
+
+let activeReviewManga = null;
+let selectedReviewRating = 0;
+let hoverReviewRating = 0;
 
 function setMessage(text, isError = false) {
   message.textContent = text;
@@ -54,7 +66,8 @@ function toSearchText(manga) {
     mediaTypeLabel(manga),
     joinArray(manga.genres),
     joinArray(manga.moods),
-    joinArray(manga.content_warnings)
+    joinArray(manga.content_warnings),
+    manga.user_review
   ]
     .filter(Boolean)
     .join(" ")
@@ -160,6 +173,101 @@ function buildMetaLine(manga) {
   }
 
   return parts.join(" · ");
+}
+
+function formatUserRating(value) {
+  const rating = Number(value);
+  if (!Number.isInteger(rating) || rating < 1 || rating > 5) {
+    return "";
+  }
+
+  return "★".repeat(rating) + "☆".repeat(5 - rating);
+}
+
+function buildUserReviewLine(manga) {
+  const stars = formatUserRating(manga.user_rating);
+  const reviewText = String(manga.user_review || "").trim();
+
+  if (stars && reviewText) {
+    return `Meine Bewertung: ${stars} – ${reviewText}`;
+  }
+
+  if (stars) {
+    return `Meine Bewertung: ${stars}`;
+  }
+
+  if (reviewText) {
+    return `Meine Rezension: ${reviewText}`;
+  }
+
+  return "";
+}
+
+function updateReviewStars() {
+  const displayRating = hoverReviewRating || selectedReviewRating;
+
+  reviewStars.forEach((button) => {
+    const rating = Number(button.dataset.rating);
+    const isActive = rating <= displayRating;
+    button.classList.toggle("active", isActive);
+    button.setAttribute("aria-pressed", isActive ? "true" : "false");
+  });
+
+  if (reviewHint) {
+    reviewHint.textContent = displayRating
+      ? `Ausgewählt: ${displayRating} Sterne`
+      : "Bewertung auswählen (1-5 Sterne).";
+  }
+
+  if (reviewClearBtn) {
+    const hasContent = selectedReviewRating > 0 || (reviewText && reviewText.value.trim());
+    reviewClearBtn.hidden = !hasContent;
+  }
+}
+
+function openReviewModal(manga) {
+  activeReviewManga = manga;
+  selectedReviewRating = Number(manga.user_rating) || 0;
+  hoverReviewRating = 0;
+  if (reviewTitle) {
+    reviewTitle.textContent = `Bewertung: ${manga.title}`;
+  }
+  if (reviewText) {
+    reviewText.value = manga.user_review || "";
+  }
+  updateReviewStars();
+
+  if (reviewModal) {
+    reviewModal.hidden = false;
+  }
+}
+
+function closeReviewModal() {
+  activeReviewManga = null;
+  selectedReviewRating = 0;
+  hoverReviewRating = 0;
+  if (reviewModal) {
+    reviewModal.hidden = true;
+  }
+}
+
+async function saveUserReview(mangaId, rating, review) {
+  const response = await fetch(`/api/manga/${mangaId}/review`, {
+    method: "PATCH",
+    headers: { "Content-Type": "application/json" },
+    body: JSON.stringify({
+      userRating: rating,
+      userReview: review
+    })
+  });
+
+  const data = await response.json().catch(() => ({}));
+  if (!response.ok) {
+    throw new Error(data.error || "Bewertung konnte nicht gespeichert werden.");
+  }
+
+  setMessage("Bewertung gespeichert.");
+  await fetchMangas();
 }
 
 function renderChipGroup(container, label, items, extraClass = "") {
@@ -370,6 +478,7 @@ function render() {
     const title = row.querySelector(".item-title");
     const badge = row.querySelector(".badge");
     const note = row.querySelector(".cell-note");
+    const reviewLine = row.querySelector(".review-line");
     const mediaType = row.querySelector(".media-type");
     const authorLine = row.querySelector(".author-line");
     const volumes = row.querySelector(".volumes");
@@ -377,7 +486,7 @@ function render() {
     const metaLine = row.querySelector(".meta-line");
     const chipRow = row.querySelector(".chip-row");
 
-
+    const reviewBtn = row.querySelector('[data-action="review"]');
     const deleteBtn = row.querySelector('[data-action="delete"]');
     const editLink = row.querySelector('[data-action="edit"]');
     const editorTarget = row.querySelector("[data-editor]");
@@ -385,6 +494,11 @@ function render() {
     title.textContent = manga.title;
     badge.textContent = manga.status;
     note.textContent = manga.notes || "";
+    if (reviewLine) {
+      const reviewText = buildUserReviewLine(manga);
+      reviewLine.textContent = reviewText;
+      reviewLine.hidden = !reviewText;
+    }
     if (metaLine) {
       const metaText = buildMetaLine(manga);
       metaLine.textContent = metaText;
@@ -406,6 +520,10 @@ function render() {
     cover.src = manga.cover_url || placeholderCover(manga.title);
     cover.alt = manga.cover_url ? `Cover von ${manga.title}` : `Platzhalter-Cover ${manga.title}`;
 
+
+    reviewBtn.addEventListener("click", () => {
+      openReviewModal(manga);
+    });
 
     deleteBtn.addEventListener("click", async () => {
       try {
@@ -437,6 +555,77 @@ if (genreFilter) {
     state.genre = genreFilter.value;
     render();
   });
+}
+
+reviewStars.forEach((button) => {
+  button.addEventListener("click", () => {
+    const rating = Number(button.dataset.rating);
+    selectedReviewRating = rating;
+    hoverReviewRating = 0;
+    updateReviewStars();
+  });
+
+  button.addEventListener("mouseenter", () => {
+    const rating = Number(button.dataset.rating);
+    hoverReviewRating = rating;
+    updateReviewStars();
+  });
+});
+
+reviewCancelBtn?.addEventListener("click", () => {
+  closeReviewModal();
+});
+
+reviewText?.addEventListener("input", () => {
+  updateReviewStars();
+});
+
+reviewModal?.addEventListener("click", (event) => {
+  if (event.target === reviewModal) {
+    closeReviewModal();
+  }
+});
+
+document.getElementById("review-stars")?.addEventListener("mouseleave", () => {
+  hoverReviewRating = 0;
+  updateReviewStars();
+});
+
+reviewSaveBtn?.addEventListener("click", async () => {
+  if (!activeReviewManga) {
+    closeReviewModal();
+    return;
+  }
+
+  if (!Number.isInteger(selectedReviewRating) || selectedReviewRating < 1 || selectedReviewRating > 5) {
+    setMessage("Bitte eine Bewertung zwischen 1 und 5 auswählen.", true);
+    return;
+  }
+
+  try {
+    await saveUserReview(activeReviewManga.id, selectedReviewRating, reviewText.value.trim());
+    closeReviewModal();
+  } catch (error) {
+    setMessage(error.message, true);
+  }
+});
+
+reviewClearBtn?.addEventListener("click", async () => {
+  if (!activeReviewManga) {
+    closeReviewModal();
+    return;
+  }
+
+  try {
+    await saveUserReview(activeReviewManga.id, null, "");
+    closeReviewModal();
+  } catch (error) {
+    setMessage(error.message, true);
+  }
+});
+
+if (reviewModal) {
+  reviewModal.hidden = true;
 }
 
 MangaTheme.init();

@@ -89,6 +89,7 @@
             <strong class="item-title"></strong>
             <span class="badge"></span>
             <p class="cell-note muted"></p>
+            <p class="review-line muted"></p>
             <p class="meta-line muted"></p>
             <div class="chip-row"></div>
           </div>
@@ -99,6 +100,7 @@
         <td class="missing-line"></td>
         <td>
           <div class="quick-actions">
+            <button data-action="review" class="secondary" type="button">Bewerten</button>
             <a data-action="edit" class="button-link secondary" href="#">Bearbeiten</a>
             <button data-action="delete" class="danger">Löschen</button>
           </div>
@@ -106,6 +108,29 @@
         </td>
       </tr>
     </template>
+
+    <div id="review-modal" class="modal-overlay" hidden>
+      <div class="modal">
+        <h3 id="review-title">Bewertung</h3>
+        <div class="star-row" id="review-stars">
+          <button class="star-button" type="button" data-rating="1">★</button>
+          <button class="star-button" type="button" data-rating="2">★</button>
+          <button class="star-button" type="button" data-rating="3">★</button>
+          <button class="star-button" type="button" data-rating="4">★</button>
+          <button class="star-button" type="button" data-rating="5">★</button>
+        </div>
+        <p class="muted" id="review-hint">Bewertung auswählen (1-5 Sterne).</p>
+
+        <label for="review-text">Deine Rezension (optional)</label>
+        <textarea id="review-text" rows="4" maxlength="1200"></textarea>
+
+        <div class="actions">
+          <button id="review-save" type="button">Speichern</button>
+          <button id="review-clear" class="secondary" type="button">Bewertung löschen</button>
+          <button id="review-cancel" class="secondary" type="button">Abbrechen</button>
+        </div>
+      </div>
+    </div>
   </body>
 </html>
 

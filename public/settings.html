@@ -49,6 +49,29 @@
         <p id="message" class="message" aria-live="polite"></p>
       </section>
 
+      <section class="panel">
+        <h2>Datenexport</h2>
+        <p class="muted">Exportiere deine Übersicht als CSV-Datei.</p>
+        <div class="actions">
+          <button id="export-csv-btn" type="button">CSV exportieren</button>
+        </div>
+        <p id="export-message" class="message" aria-live="polite"></p>
+      </section>
+
+      <section class="panel">
+        <h2>Datenimport</h2>
+        <p class="muted">Importiere eine zuvor exportierte CSV-Datei in deine Übersicht.</p>
+        <div class="actions">
+          <input id="import-file" type="file" accept=".csv,text/csv" />
+          <button id="preview-csv-btn" class="secondary" type="button">CSV prüfen</button>
+          <button id="import-csv-btn" type="button">CSV importieren</button>
+        </div>
+        <p class="muted">
+          Hinweis: Der Import legt neue Einträge an. Dubletten werden automatisch übersprungen (Titel + Typ).
+        </p>
+        <p id="import-message" class="message" aria-live="polite"></p>
+      </section>
+
       <section class="panel admin-panel" id="admin-panel" hidden>
         <div class="section-header">
           <div>
