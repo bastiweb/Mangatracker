@@ -26,8 +26,10 @@ const state = {
   search: "",
   role: "all",
   sort: "created_asc",
-  users: []
+  users: [],
+  totalUsers: 0
 };
+let userQueryTimer = null;
 
 if (modalOverlay) {
   modalOverlay.hidden = true;
@@ -64,73 +66,16 @@ function formatDate(value) {
   return parsed.toLocaleString(locale, { dateStyle: "medium", timeStyle: "short" });
 }
 
-function getLocale() {
-  const lang = window.MangaI18n && window.MangaI18n.getLang ? window.MangaI18n.getLang() : "de";
-  return lang === "en" ? "en" : "de";
-}
-
-function normalizeText(value) {
-  return String(value || "").toLowerCase();
-}
-
-function sortUsers(users, mode) {
-  const locale = getLocale();
-  const clone = [...users];
-
-  clone.sort((a, b) => {
-    if (mode === "email_asc") {
-      return a.email.localeCompare(b.email, locale);
-    }
-    if (mode === "email_desc") {
-      return b.email.localeCompare(a.email, locale);
-    }
-    if (mode === "created_desc") {
-      return new Date(b.created_at).getTime() - new Date(a.created_at).getTime();
-    }
-    if (mode === "entries_desc") {
-      return (b.entries_count || 0) - (a.entries_count || 0);
-    }
-    if (mode === "sessions_desc") {
-      return (b.session_count || 0) - (a.session_count || 0);
-    }
-    if (mode === "last_login_desc") {
-      return new Date(b.last_session_at || 0).getTime() - new Date(a.last_session_at || 0).getTime();
-    }
-    return new Date(a.created_at).getTime() - new Date(b.created_at).getTime();
-  });
-
-  return clone;
-}
-
-function filteredUsers() {
-  const search = normalizeText(state.search);
-  const role = state.role;
-  const filtered = state.users.filter((user) => {
-    if (role !== "all" && user.role !== role) {
-      return false;
-    }
-
-    if (!search) {
-      return true;
-    }
-
-    const haystack = `${user.email} ${user.username || ""} ${user.role}`.toLowerCase();
-    return haystack.includes(search);
-  });
-
-  return sortUsers(filtered, state.sort);
-}
-
-function updateStats(list, all) {
+function updateStats(list, totalUsersValue) {
   if (!userStats) {
     return;
   }
 
-  const total = all.length;
+  const total = Number(totalUsersValue || 0);
   const shown = list.length;
-  const admins = all.filter((user) => user.role === "admin").length;
-  const sessions = all.reduce((sum, user) => sum + (user.session_count || 0), 0);
-  const entries = all.reduce((sum, user) => sum + (user.entries_count || 0), 0);
+  const admins = list.filter((user) => user.role === "admin").length;
+  const sessions = list.reduce((sum, user) => sum + (user.session_count || 0), 0);
+  const entries = list.reduce((sum, user) => sum + (user.entries_count || 0), 0);
 
   userStats.textContent = t("stats_summary", { shown, total, admins, sessions, entries });
 }
@@ -288,11 +233,26 @@ function renderUsers(list) {
     });
   }
 
-  updateStats(list, state.users);
+  updateStats(list, state.totalUsers || list.length);
 }
 
 async function loadUsers() {
-  const response = await fetch("/api/admin/users");
+  const params = new URLSearchParams();
+  const searchValue = (state.search || "").trim();
+
+  if (searchValue) {
+    params.set("q", searchValue);
+  }
+  if (state.role && state.role !== "all") {
+    params.set("role", state.role);
+  }
+  if (state.sort) {
+    params.set("sort", state.sort);
+  }
+
+  const query = params.toString();
+  const endpoint = query ? `/api/admin/users?${query}` : "/api/admin/users";
+  const response = await fetch(endpoint);
 
   if (response.status === 401) {
     window.location.href = "/login";
@@ -313,8 +273,25 @@ async function loadUsers() {
   const users = Array.isArray(data.users) ? data.users : [];
   cachedUsers = users;
   state.users = users;
-  renderUsers(filteredUsers());
+  state.totalUsers = Number(data.total ?? users.length);
+  renderUsers(users);
   return users;
+}
+
+function scheduleUsersReload(delayMs = 250) {
+  if (userQueryTimer) {
+    clearTimeout(userQueryTimer);
+  }
+
+  userQueryTimer = window.setTimeout(async () => {
+    try {
+      setUsersMessage(t("msg_users_loading"));
+      await loadUsers();
+      setUsersMessage(t("msg_ready"));
+    } catch (error) {
+      setUsersMessage(error.message, true);
+    }
+  }, delayMs);
 }
 
 async function loadRegistrationSetting() {
@@ -459,22 +436,22 @@ refreshUsersBtn?.addEventListener("click", async () => {
 
 userSearch?.addEventListener("input", () => {
   state.search = userSearch.value;
-  renderUsers(filteredUsers());
+  scheduleUsersReload();
 });
 
 roleFilter?.addEventListener("change", () => {
   state.role = roleFilter.value;
-  renderUsers(filteredUsers());
+  scheduleUsersReload(0);
 });
 
 userSort?.addEventListener("change", () => {
   state.sort = userSort.value;
-  renderUsers(filteredUsers());
+  scheduleUsersReload(0);
 });
 
 window.addEventListener("manga-i18n:change", () => {
   if (cachedUsers.length > 0) {
-    renderUsers(filteredUsers());
+    renderUsers(state.users);
   }
   if (pendingReset && modalText) {
     const selectedOption = resetUserSelect?.options?.[resetUserSelect.selectedIndex];

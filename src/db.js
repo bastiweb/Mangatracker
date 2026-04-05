@@ -4,8 +4,10 @@ const Database = require("better-sqlite3-multiple-ciphers");
 
 const DB_FILE = process.env.DB_FILE || path.join(__dirname, "..", "data", "manga.db");
 const DB_ENCRYPTION_KEY = String(process.env.DB_ENCRYPTION_KEY || "");
+const MANGA_FTS_TABLE = "mangas_fts";
 
 let db;
+const USERNAME_MAX_LENGTH = 40;
 
 function escapePragmaValue(value) {
   return String(value).replace(/'/g, "''");
@@ -81,8 +83,59 @@ function createDb(filename) {
     all(sql, params) {
       const stmt = raw.prepare(sql);
       return params !== undefined ? stmt.all(params) : stmt.all();
+    },
+    prepare(sql) {
+      return raw.prepare(sql);
+    },
+    transaction(fn) {
+      return raw.transaction(fn);
     }
   };
+}
+
+function normalizeUsername(value, maxLength = USERNAME_MAX_LENGTH) {
+  if (typeof value !== "string") {
+    return "";
+  }
+
+  // Keep username migration in sync with runtime validation rules.
+  return value
+    .trim()
+    .replace(/\s+/g, " ")
+    .replace(/@/g, "")
+    .replace(/[^a-zA-Z0-9._\- ]+/g, "")
+    .slice(0, maxLength);
+}
+
+function deriveUsernameFromEmail(email, maxLength = USERNAME_MAX_LENGTH) {
+  if (typeof email !== "string") {
+    return "";
+  }
+
+  const normalizedEmail = email.trim();
+  const atIndex = normalizedEmail.indexOf("@");
+  const base = atIndex > 0 ? normalizedEmail.slice(0, atIndex) : normalizedEmail;
+  return normalizeUsername(base, maxLength);
+}
+
+function allocateUniqueUsername(base, usedKeys, maxLength = USERNAME_MAX_LENGTH) {
+  let normalizedBase = normalizeUsername(base, maxLength);
+  if (!normalizedBase) {
+    normalizedBase = "user";
+  }
+
+  let candidate = normalizedBase;
+  let suffix = 1;
+
+  while (usedKeys.has(candidate.toLowerCase())) {
+    const suffixText = `-${suffix}`;
+    const baseLength = Math.max(1, maxLength - suffixText.length);
+    candidate = `${normalizedBase.slice(0, baseLength)}${suffixText}`;
+    suffix += 1;
+  }
+
+  usedKeys.add(candidate.toLowerCase());
+  return candidate;
 }
 
 async function ensureColumn(table, name, definition) {
@@ -92,6 +145,144 @@ async function ensureColumn(table, name, definition) {
   if (!exists) {
     await db.exec(`ALTER TABLE ${table} ADD COLUMN ${definition}`);
   }
+}
+
+async function ensureMangaFts() {
+  await db.exec(`
+    CREATE VIRTUAL TABLE IF NOT EXISTS ${MANGA_FTS_TABLE} USING fts5(
+      manga_id UNINDEXED,
+      user_id UNINDEXED,
+      title,
+      author_name,
+      notes,
+      status,
+      media_type,
+      genres,
+      moods,
+      content_warnings,
+      user_review,
+      tokenize = "unicode61"
+    );
+  `);
+
+  await db.exec(`
+    CREATE TRIGGER IF NOT EXISTS mangas_fts_ai
+    AFTER INSERT ON mangas
+    BEGIN
+      INSERT INTO ${MANGA_FTS_TABLE} (
+        rowid,
+        manga_id,
+        user_id,
+        title,
+        author_name,
+        notes,
+        status,
+        media_type,
+        genres,
+        moods,
+        content_warnings,
+        user_review
+      )
+      VALUES (
+        NEW.id,
+        NEW.id,
+        COALESCE(NEW.user_id, 0),
+        COALESCE(NEW.title, ''),
+        COALESCE(NEW.author_name, ''),
+        COALESCE(NEW.notes, ''),
+        COALESCE(NEW.status, ''),
+        COALESCE(NEW.media_type, ''),
+        COALESCE(NEW.genres, ''),
+        COALESCE(NEW.moods, ''),
+        COALESCE(NEW.content_warnings, ''),
+        COALESCE(NEW.user_review, '')
+      );
+    END;
+  `);
+
+  await db.exec(`
+    CREATE TRIGGER IF NOT EXISTS mangas_fts_ad
+    AFTER DELETE ON mangas
+    BEGIN
+      DELETE FROM ${MANGA_FTS_TABLE}
+      WHERE rowid = OLD.id;
+    END;
+  `);
+
+  await db.exec(`
+    CREATE TRIGGER IF NOT EXISTS mangas_fts_au
+    AFTER UPDATE ON mangas
+    BEGIN
+      DELETE FROM ${MANGA_FTS_TABLE}
+      WHERE rowid = OLD.id;
+
+      INSERT INTO ${MANGA_FTS_TABLE} (
+        rowid,
+        manga_id,
+        user_id,
+        title,
+        author_name,
+        notes,
+        status,
+        media_type,
+        genres,
+        moods,
+        content_warnings,
+        user_review
+      )
+      VALUES (
+        NEW.id,
+        NEW.id,
+        COALESCE(NEW.user_id, 0),
+        COALESCE(NEW.title, ''),
+        COALESCE(NEW.author_name, ''),
+        COALESCE(NEW.notes, ''),
+        COALESCE(NEW.status, ''),
+        COALESCE(NEW.media_type, ''),
+        COALESCE(NEW.genres, ''),
+        COALESCE(NEW.moods, ''),
+        COALESCE(NEW.content_warnings, ''),
+        COALESCE(NEW.user_review, '')
+      );
+    END;
+  `);
+
+  // Keep FTS index synchronized on migrations without forcing full rebuild every startup.
+  await db.run(
+    `DELETE FROM ${MANGA_FTS_TABLE} WHERE rowid NOT IN (SELECT id FROM mangas)`
+  );
+  await db.run(
+    `
+      INSERT OR REPLACE INTO ${MANGA_FTS_TABLE} (
+        rowid,
+        manga_id,
+        user_id,
+        title,
+        author_name,
+        notes,
+        status,
+        media_type,
+        genres,
+        moods,
+        content_warnings,
+        user_review
+      )
+      SELECT
+        id,
+        id,
+        COALESCE(user_id, 0),
+        COALESCE(title, ''),
+        COALESCE(author_name, ''),
+        COALESCE(notes, ''),
+        COALESCE(status, ''),
+        COALESCE(media_type, ''),
+        COALESCE(genres, ''),
+        COALESCE(moods, ''),
+        COALESCE(content_warnings, ''),
+        COALESCE(user_review, '')
+      FROM mangas
+    `
+  );
 }
 
 async function initDb() {
@@ -139,11 +330,27 @@ async function initDb() {
     );
 
     CREATE INDEX IF NOT EXISTS idx_sessions_token_hash ON sessions(token_hash);
+    CREATE INDEX IF NOT EXISTS idx_sessions_user_id ON sessions(user_id);
+    CREATE INDEX IF NOT EXISTS idx_sessions_user_created ON sessions(user_id, created_at DESC);
 
     CREATE TABLE IF NOT EXISTS settings (
       key TEXT PRIMARY KEY,
       value TEXT
     );
+
+    CREATE TABLE IF NOT EXISTS admin_audit_log (
+      id INTEGER PRIMARY KEY AUTOINCREMENT,
+      actor_user_id INTEGER NOT NULL,
+      action TEXT NOT NULL,
+      target_type TEXT,
+      target_id TEXT,
+      details TEXT,
+      created_at TEXT NOT NULL DEFAULT CURRENT_TIMESTAMP,
+      FOREIGN KEY(actor_user_id) REFERENCES users(id) ON DELETE CASCADE
+    );
+
+    CREATE INDEX IF NOT EXISTS idx_admin_audit_created ON admin_audit_log(created_at DESC, id DESC);
+    CREATE INDEX IF NOT EXISTS idx_admin_audit_actor ON admin_audit_log(actor_user_id, created_at DESC);
 
     CREATE TRIGGER IF NOT EXISTS set_updated_at
     AFTER UPDATE ON mangas
@@ -171,6 +378,9 @@ async function initDb() {
   await ensureColumn("mangas", "user_review", "user_review TEXT");
   await ensureColumn("mangas", "user_id", "user_id INTEGER");
   await ensureColumn("users", "username", "username TEXT");
+  // Keep overview and import duplicate checks fast on larger user libraries.
+  await db.exec("CREATE INDEX IF NOT EXISTS idx_mangas_user_updated ON mangas(user_id, updated_at DESC, id DESC)");
+  await db.exec("CREATE INDEX IF NOT EXISTS idx_mangas_user_media_title ON mangas(user_id, media_type, title)");
 
   await db.run("UPDATE mangas SET media_type = LOWER(TRIM(media_type)) WHERE media_type IS NOT NULL");
   await db.run(
@@ -189,11 +399,26 @@ async function initDb() {
     "UPDATE mangas SET missing_volumes = '[]' WHERE missing_volumes IS NULL OR TRIM(missing_volumes) = ''"
   );
 
-  await db.run("UPDATE users SET username = TRIM(username) WHERE username IS NOT NULL");
-  await db.run(
-    "UPDATE users SET username = SUBSTR(email, 1, INSTR(email, '@') - 1) WHERE (username IS NULL OR TRIM(username) = '') AND email IS NOT NULL AND INSTR(email, '@') > 1"
-  );
   await db.run("UPDATE users SET email = LOWER(TRIM(email)) WHERE email IS NOT NULL");
+  const users = await db.all("SELECT id, email, username FROM users ORDER BY id ASC");
+  const usedUsernames = new Set();
+
+  // Normalize and deduplicate existing usernames before creating UNIQUE index.
+  for (const user of users) {
+    const fromUsername = normalizeUsername(user.username);
+    const fromEmail = deriveUsernameFromEmail(user.email);
+    const base = fromUsername || fromEmail || `user${user.id}`;
+    const unique = allocateUniqueUsername(base, usedUsernames);
+
+    if (user.username !== unique) {
+      await db.run("UPDATE users SET username = ? WHERE id = ?", [unique, user.id]);
+    }
+  }
+
+  await db.exec(
+    "CREATE UNIQUE INDEX IF NOT EXISTS idx_users_username_nocase ON users(username COLLATE NOCASE)"
+  );
+  await ensureMangaFts();
 
   return db;
 }
