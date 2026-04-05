@@ -2,3 +2,7 @@ node_modules/
 data/
 .DS_Store
 Thumbs.db
+.env
+.env.local
+backups/*
+!backups/.gitkeep

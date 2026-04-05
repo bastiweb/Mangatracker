@@ -10,6 +10,7 @@ const passwordConfirmInput = document.getElementById("passwordConfirm");
 const t = (key, vars) => (window.MangaI18n && window.MangaI18n.t ? window.MangaI18n.t(key, vars) : key);
 
 let registrationMode = "unknown";
+const usernamePattern = /^[a-zA-Z0-9._\- ]+$/;
 
 function setMessage(text, isError = false) {
   message.textContent = text;
@@ -24,6 +25,24 @@ function setFormEnabled(enabled) {
   form.querySelectorAll("input, select, button").forEach((element) => {
     element.disabled = !enabled;
   });
+}
+
+function validateUsernameInput(rawValue) {
+  // Mirror backend username policy for immediate user feedback.
+  const username = String(rawValue || "").trim();
+  if (!username) {
+    return t("msg_username_required");
+  }
+  if (username.length < 3) {
+    return t("msg_username_too_short");
+  }
+  if (username.includes("@")) {
+    return t("msg_username_no_at");
+  }
+  if (!usernamePattern.test(username)) {
+    return t("msg_username_invalid_chars");
+  }
+  return "";
 }
 
 async function resolveRegistrationMode() {
@@ -80,14 +99,16 @@ form.addEventListener("submit", async (event) => {
     return;
   }
 
-  if (!usernameInput.value.trim()) {
-    setMessage(t("msg_username_required"), true);
+  const username = usernameInput.value.trim();
+  const usernameError = validateUsernameInput(username);
+  if (usernameError) {
+    setMessage(usernameError, true);
     return;
   }
 
   const payload = {
     email: emailInput.value,
-    username: usernameInput.value.trim(),
+    username,
     password: passwordInput.value
   };
 

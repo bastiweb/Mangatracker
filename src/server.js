@@ -1,5 +1,6 @@
 const express = require("express");
 const crypto = require("crypto");
+const fs = require("fs");
 const path = require("path");
 const { initDb } = require("./db");
 
@@ -9,13 +10,63 @@ const ALLOWED_STATUS = ["Geplant", "Sammle", "Pausiert", "Abgeschlossen"];
 const ALLOWED_MEDIA_TYPES = ["manga", "book"];
 const ALLOWED_ROLES = ["user", "admin"];
 const PASSWORD_MIN_LENGTH = 8;
+const PASSWORD_MAX_LENGTH = 200;
 const USERNAME_MAX_LENGTH = 40;
+const USERNAME_MIN_LENGTH = 3;
 const SESSION_COOKIE = "manga_tracker_session";
 const SESSION_TTL_SECONDS = 60 * 60 * 24 * 7;
+const SESSION_CLEANUP_MS = 60 * 60 * 1000;
+const LOGIN_WINDOW_MS = 15 * 60 * 1000;
+const LOGIN_BLOCK_MS = 15 * 60 * 1000;
+const LOGIN_MAX_ATTEMPTS = 15;
+const LOGIN_RATE_LIMIT_CLEANUP_MS = 5 * 60 * 1000;
+const LOGIN_RATE_LIMIT_MAX_ENTRIES = 10000;
+const TRUST_PROXY = String(process.env.TRUST_PROXY || "false").toLowerCase() === "true";
+const CSRF_TRUSTED_ORIGINS = String(process.env.CSRF_TRUSTED_ORIGINS || "")
+  .split(",")
+  .map((entry) => entry.trim().toLowerCase())
+  .filter(Boolean);
+const BACKUP_ENABLED = String(process.env.BACKUP_ENABLED || "false").toLowerCase() === "true";
+const BACKUP_INTERVAL_MINUTES = parseEnvPositiveInt(process.env.BACKUP_INTERVAL_MINUTES, 24 * 60);
+const BACKUP_RETENTION_DAYS = parseEnvPositiveInt(process.env.BACKUP_RETENTION_DAYS, 14);
+const BACKUP_DIR = process.env.BACKUP_DIR
+  ? path.resolve(process.env.BACKUP_DIR)
+  : path.join(__dirname, "..", "backups");
+const BACKUP_FILE_PREFIX = "manga-db-backup";
 const HARDCOVER_TOKEN_KEY = "hardcover_api_token";
 const REGISTRATION_SETTING_KEY = "allow_registration";
 const HARDCOVER_ENDPOINT = "https://api.hardcover.app/v1/graphql";
+const MANGA_SORT_SQL = {
+  updated_desc: "m.updated_at DESC, m.id DESC",
+  title_asc: "m.title COLLATE NOCASE ASC, m.id ASC",
+  title_desc: "m.title COLLATE NOCASE DESC, m.id DESC",
+  owned_desc: "m.owned_volumes DESC, m.id DESC",
+  owned_asc: "m.owned_volumes ASC, m.id ASC"
+};
+const ADMIN_USER_SORT_SQL = {
+  created_asc: "users.created_at ASC, users.id ASC",
+  created_desc: "users.created_at DESC, users.id DESC",
+  email_asc: "users.email COLLATE NOCASE ASC, users.id ASC",
+  email_desc: "users.email COLLATE NOCASE DESC, users.id DESC",
+  entries_desc: "entries_count DESC, users.id DESC",
+  sessions_desc: "session_count DESC, users.id DESC",
+  last_login_desc: "last_session_at DESC, users.id DESC"
+};
+const loginRateLimitState = new Map();
+let lastRateLimitCleanupAt = 0;
+let lastSessionCleanupAt = 0;
+let backupInProgress = false;
+let backupIntervalHandle = null;
 
+function parseEnvPositiveInt(value, fallback) {
+  const parsed = Number(value);
+  if (!Number.isInteger(parsed) || parsed <= 0) {
+    return fallback;
+  }
+  return parsed;
+}
+
+app.set("trust proxy", TRUST_PROXY ? 1 : false);
 app.use(express.json());
 app.use(
   express.text({
@@ -23,6 +74,58 @@ app.use(
     limit: "5mb"
   })
 );
+app.use((req, res, next) => {
+  res.setHeader("X-Content-Type-Options", "nosniff");
+  res.setHeader("X-Frame-Options", "DENY");
+  res.setHeader("Referrer-Policy", "strict-origin-when-cross-origin");
+  res.setHeader("Permissions-Policy", "camera=(), microphone=(), geolocation=()");
+  res.setHeader("Cross-Origin-Resource-Policy", "same-origin");
+  res.setHeader("Cross-Origin-Opener-Policy", "same-origin");
+
+  const forwardedProto = String(req.headers["x-forwarded-proto"] || "");
+  const isSecureRequest = req.secure || forwardedProto.toLowerCase().includes("https");
+  if (isSecureRequest) {
+    // Enforce HTTPS after first secure response.
+    res.setHeader("Strict-Transport-Security", "max-age=31536000; includeSubDomains");
+  }
+
+  if (!req.path.startsWith("/api/")) {
+    // Keep CSP strict for scripts and forms. Styles allow inline because UI updates color dynamically.
+    res.setHeader(
+      "Content-Security-Policy",
+      "default-src 'self'; base-uri 'self'; frame-ancestors 'none'; object-src 'none'; script-src 'self'; style-src 'self' 'unsafe-inline'; img-src 'self' data: https:; connect-src 'self'; form-action 'self'"
+    );
+  }
+
+  return next();
+});
+app.use((req, res, next) => {
+  const requestId = createRequestId();
+  const startedAt = process.hrtime.bigint();
+  req.requestId = requestId;
+  res.setHeader("X-Request-Id", requestId);
+
+  res.on("finish", () => {
+    if (!req.path.startsWith("/api/")) {
+      return;
+    }
+    if (req.path === "/api/health") {
+      return;
+    }
+
+    const durationMs = Number(process.hrtime.bigint() - startedAt) / 1_000_000;
+    const userId = req.user && req.user.id ? req.user.id : "anonymous";
+
+    // Keep API access logs compact and machine-parsable for troubleshooting.
+    console.log(
+      `[api] request_id=${requestId} method=${req.method} path=${req.path} status=${res.statusCode} duration_ms=${durationMs.toFixed(
+        1
+      )} user_id=${userId}`
+    );
+  });
+
+  return next();
+});
 app.use(async (req, res, next) => {
   if (req.path === "/admin.html") {
     try {
@@ -41,6 +144,17 @@ app.use(async (req, res, next) => {
   return next();
 });
 app.use(express.static(path.join(__dirname, "..", "public"), { index: false }));
+app.use(requireSameOriginForWrites);
+app.use((req, res, next) => {
+  if (
+    req.path.startsWith("/api/auth/") ||
+    req.path.startsWith("/api/admin/") ||
+    req.path.startsWith("/api/settings/")
+  ) {
+    res.setHeader("Cache-Control", "no-store");
+  }
+  return next();
+});
 
 function parsePositiveInt(value) {
   const parsed = Number(value);
@@ -82,6 +196,81 @@ function parseOptionalFloat(value, maxValue = null) {
   return Math.round(parsed * 100) / 100;
 }
 
+function parseBoundedPositiveInt(value, fallback, minValue, maxValue) {
+  if (value === undefined || value === null || value === "") {
+    return fallback;
+  }
+
+  const parsed = Number(value);
+  if (!Number.isInteger(parsed)) {
+    return fallback;
+  }
+
+  if (parsed < minValue) {
+    return minValue;
+  }
+  if (parsed > maxValue) {
+    return maxValue;
+  }
+  return parsed;
+}
+
+function hasQueryValue(value) {
+  return value !== undefined && value !== null && String(value).trim() !== "";
+}
+
+function normalizeSortMode(rawSort) {
+  const sort = sanitizeText(String(rawSort || ""), 40);
+  if (Object.prototype.hasOwnProperty.call(MANGA_SORT_SQL, sort)) {
+    return sort;
+  }
+  return "updated_desc";
+}
+
+function normalizeAdminUserSortMode(rawSort) {
+  const sort = sanitizeText(String(rawSort || ""), 40);
+  if (Object.prototype.hasOwnProperty.call(ADMIN_USER_SORT_SQL, sort)) {
+    return sort;
+  }
+  return "created_asc";
+}
+
+function normalizeGenreFilter(rawGenre) {
+  if (!rawGenre || rawGenre === "all") {
+    return "";
+  }
+  return sanitizeText(String(rawGenre || ""), 80);
+}
+
+function buildFtsQuery(rawInput) {
+  const input = sanitizeText(String(rawInput || ""), 200).toLowerCase();
+  if (!input) {
+    return "";
+  }
+
+  const terms = input
+    .split(/\s+/)
+    .map((term) => term.replace(/["']/g, "").trim())
+    .map((term) => term.replace(/[^\p{L}\p{N}._\-]+/gu, ""))
+    .filter((term) => term.length >= 2)
+    .slice(0, 8);
+
+  if (terms.length === 0) {
+    return "";
+  }
+
+  // Prefix queries keep the search responsive while still matching incomplete inputs.
+  return terms.map((term) => `"${term}"*`).join(" AND ");
+}
+
+function createRequestId() {
+  if (typeof crypto.randomUUID === "function") {
+    return crypto.randomUUID();
+  }
+
+  return crypto.randomBytes(16).toString("hex");
+}
+
 function sanitizeTextArray(value, maxItems = 12, maxLength = 60) {
   if (!Array.isArray(value)) {
     return [];
@@ -106,6 +295,24 @@ function sanitizeText(value, maxLength = 1000) {
     return "";
   }
   return value.trim().slice(0, maxLength);
+}
+
+function sanitizeCoverUrl(value) {
+  const sanitized = sanitizeText(value, 600);
+  if (!sanitized) {
+    return "";
+  }
+
+  try {
+    const parsed = new URL(sanitized);
+    // Only allow http(s) image sources to avoid scriptable URL schemes.
+    if (parsed.protocol !== "https:" && parsed.protocol !== "http:") {
+      return "";
+    }
+    return parsed.toString().slice(0, 600);
+  } catch {
+    return "";
+  }
 }
 
 function normalizeMissingVolumes(value, totalVolumes) {
@@ -184,6 +391,27 @@ function sanitizeUsername(value, maxLength = USERNAME_MAX_LENGTH) {
   return value.trim().replace(/\s+/g, " ").slice(0, maxLength);
 }
 
+function validateUsername(username) {
+  // Keep this policy aligned with frontend validation and DB migration.
+  if (!username) {
+    return "Bitte einen Benutzernamen angeben.";
+  }
+
+  if (username.length < USERNAME_MIN_LENGTH) {
+    return `Benutzername muss mindestens ${USERNAME_MIN_LENGTH} Zeichen haben.`;
+  }
+
+  if (username.includes("@")) {
+    return "Benutzername darf kein @ enthalten.";
+  }
+
+  if (!/^[a-zA-Z0-9._\- ]+$/.test(username)) {
+    return "Benutzername enthält ungültige Zeichen.";
+  }
+
+  return null;
+}
+
 function parseCookies(header) {
   if (!header) {
     return {};
@@ -195,7 +423,13 @@ function parseCookies(header) {
       return acc;
     }
 
-    acc[key] = decodeURIComponent(rest.join("="));
+    const rawValue = rest.join("=");
+    try {
+      acc[key] = decodeURIComponent(rawValue);
+    } catch {
+      // Fallback to raw cookie value when decoding fails.
+      acc[key] = rawValue;
+    }
     return acc;
   }, {});
 }
@@ -203,6 +437,180 @@ function parseCookies(header) {
 function getSessionToken(req) {
   const cookies = parseCookies(req.headers.cookie);
   return cookies[SESSION_COOKIE] || "";
+}
+
+function getClientAddress(req) {
+  // req.ip already respects app.set("trust proxy", ...).
+  return sanitizeText(String(req.ip || req.socket?.remoteAddress || "unknown"), 120);
+}
+
+function getRateLimitKey(req, identifier = "") {
+  // Key by IP + identifier to avoid blocking unrelated accounts on one network.
+  const ip = getClientAddress(req).toLowerCase();
+  const normalizedIdentifier = sanitizeText(String(identifier || ""), 140).toLowerCase();
+  if (!normalizedIdentifier) {
+    return ip;
+  }
+
+  return `${ip}|${normalizedIdentifier}`;
+}
+
+function cleanupLoginRateLimitState(now = Date.now()) {
+  if (now - lastRateLimitCleanupAt < LOGIN_RATE_LIMIT_CLEANUP_MS) {
+    return;
+  }
+  lastRateLimitCleanupAt = now;
+
+  for (const [key, entry] of loginRateLimitState.entries()) {
+    const blocked = entry.blockedUntil && entry.blockedUntil > now;
+    const windowActive = now - entry.windowStartedAt <= LOGIN_WINDOW_MS;
+    if (!blocked && !windowActive) {
+      loginRateLimitState.delete(key);
+    }
+  }
+
+  if (loginRateLimitState.size <= LOGIN_RATE_LIMIT_MAX_ENTRIES) {
+    return;
+  }
+
+  for (const key of loginRateLimitState.keys()) {
+    loginRateLimitState.delete(key);
+    if (loginRateLimitState.size <= LOGIN_RATE_LIMIT_MAX_ENTRIES) {
+      break;
+    }
+  }
+}
+
+function getLoginRateLimitStatus(req, identifier = "") {
+  cleanupLoginRateLimitState();
+  const key = getRateLimitKey(req, identifier);
+  const now = Date.now();
+  const entry = loginRateLimitState.get(key);
+
+  if (!entry) {
+    return { blocked: false, retryAfterSeconds: 0 };
+  }
+
+  if (entry.blockedUntil && entry.blockedUntil > now) {
+    return {
+      blocked: true,
+      retryAfterSeconds: Math.ceil((entry.blockedUntil - now) / 1000)
+    };
+  }
+
+  if (entry.blockedUntil && entry.blockedUntil <= now) {
+    loginRateLimitState.set(key, {
+      windowStartedAt: now,
+      failures: 0,
+      blockedUntil: null
+    });
+    return { blocked: false, retryAfterSeconds: 0 };
+  }
+
+  if (now - entry.windowStartedAt > LOGIN_WINDOW_MS) {
+    loginRateLimitState.delete(key);
+  }
+
+  return { blocked: false, retryAfterSeconds: 0 };
+}
+
+function recordLoginFailure(req, identifier = "") {
+  cleanupLoginRateLimitState();
+  const key = getRateLimitKey(req, identifier);
+  const now = Date.now();
+  const entry = loginRateLimitState.get(key);
+
+  if (!entry || now - entry.windowStartedAt > LOGIN_WINDOW_MS) {
+    loginRateLimitState.set(key, {
+      windowStartedAt: now,
+      failures: 1,
+      blockedUntil: null
+    });
+    return;
+  }
+
+  entry.failures += 1;
+  if (entry.failures >= LOGIN_MAX_ATTEMPTS) {
+    entry.blockedUntil = now + LOGIN_BLOCK_MS;
+  }
+  loginRateLimitState.set(key, entry);
+}
+
+function clearLoginFailures(req, identifier = "") {
+  const key = getRateLimitKey(req, identifier);
+  loginRateLimitState.delete(key);
+}
+
+function normalizeOrigin(value) {
+  if (!value) {
+    return "";
+  }
+
+  try {
+    return new URL(value).origin.toLowerCase();
+  } catch {
+    return "";
+  }
+}
+
+function getRequestOrigin(req) {
+  const origin = sanitizeText(String(req.headers.origin || ""), 300);
+  if (origin) {
+    return normalizeOrigin(origin);
+  }
+
+  const referer = sanitizeText(String(req.headers.referer || ""), 600);
+  if (referer) {
+    return normalizeOrigin(referer);
+  }
+
+  return "";
+}
+
+function getExpectedOrigin(req) {
+  const forwardedProto = sanitizeText(String(req.headers["x-forwarded-proto"] || ""), 40);
+  const proto = forwardedProto ? forwardedProto.split(",")[0].trim().toLowerCase() : req.secure ? "https" : "http";
+  const forwardedHost = sanitizeText(String(req.headers["x-forwarded-host"] || ""), 220);
+  const host = (forwardedHost ? forwardedHost.split(",")[0].trim() : sanitizeText(String(req.headers.host || ""), 220)).toLowerCase();
+
+  if (!host) {
+    return "";
+  }
+
+  return normalizeOrigin(`${proto}://${host}`);
+}
+
+function isTrustedOrigin(origin, expectedOrigin) {
+  if (!origin) {
+    return false;
+  }
+
+  if (expectedOrigin && origin === expectedOrigin) {
+    return true;
+  }
+
+  return CSRF_TRUSTED_ORIGINS.includes(origin);
+}
+
+function requireSameOriginForWrites(req, res, next) {
+  if (!req.path.startsWith("/api/")) {
+    return next();
+  }
+
+  const method = String(req.method || "").toUpperCase();
+  if (method === "GET" || method === "HEAD" || method === "OPTIONS") {
+    return next();
+  }
+
+  const origin = getRequestOrigin(req);
+  const expectedOrigin = getExpectedOrigin(req);
+
+  // Reject cross-site write requests to reduce CSRF risk for cookie-based auth.
+  if (!isTrustedOrigin(origin, expectedOrigin)) {
+    return res.status(403).json({ error: "CSRF protection: invalid request origin." });
+  }
+
+  return next();
 }
 
 function hashToken(token) {
@@ -273,7 +681,10 @@ function sanitizeUser(row) {
 }
 
 function buildSessionCookieOptions(req) {
-  const forwardedProto = req.headers["x-forwarded-proto"];
+  const forwardedProto = sanitizeText(String(req.headers["x-forwarded-proto"] || ""), 40)
+    .split(",")[0]
+    .trim()
+    .toLowerCase();
   const isSecure = req.secure || forwardedProto === "https";
 
   return {
@@ -285,6 +696,16 @@ function buildSessionCookieOptions(req) {
   };
 }
 
+async function cleanupExpiredSessions(db, nowSeconds) {
+  const nowMs = Date.now();
+  if (nowMs - lastSessionCleanupAt < SESSION_CLEANUP_MS) {
+    return;
+  }
+
+  lastSessionCleanupAt = nowMs;
+  await db.run("DELETE FROM sessions WHERE expires_at <= ?", [nowSeconds]);
+}
+
 async function getSessionUser(req) {
   const token = getSessionToken(req);
   if (!token) {
@@ -294,6 +715,7 @@ async function getSessionUser(req) {
   const db = await initDb();
   const tokenHash = hashToken(token);
   const now = Math.floor(Date.now() / 1000);
+  await cleanupExpiredSessions(db, now);
 
   const row = await db.get(
     "SELECT sessions.user_id, sessions.expires_at, users.email, users.role, users.username FROM sessions JOIN users ON sessions.user_id = users.id WHERE sessions.token_hash = ? AND sessions.expires_at > ?",
@@ -356,7 +778,7 @@ function normalizeMangaRow(row) {
     ...row,
     media_type: mediaType,
     author_name: row.author_name || "",
-    cover_url: row.cover_url || "",
+    cover_url: sanitizeCoverUrl(row.cover_url || ""),
     hardcover_book_id: row.hardcover_book_id || "",
     missing_volumes: mediaType === "book" ? [] : parseMissingVolumesFromDb(row.missing_volumes),
     genres: parseTextArrayFromDb(row.genres),
@@ -376,7 +798,12 @@ function toCsvValue(value) {
     return "";
   }
 
-  const stringValue = String(value);
+  let stringValue = String(value);
+  if (/^[\t\r ]*[=+\-@]/.test(stringValue)) {
+    // Prevent CSV formula injection in spreadsheet tools.
+    stringValue = `'${stringValue}`;
+  }
+
   if (stringValue.includes("\"") || stringValue.includes(",") || stringValue.includes("\n") || stringValue.includes("\r")) {
     return `"${stringValue.replace(/"/g, "\"\"")}"`;
   }
@@ -502,7 +929,7 @@ function validatePayload(payload) {
   const status = sanitizeText(payload.status || "Sammle", 40);
   const notes = sanitizeText(payload.notes || "", 600);
   const authorName = sanitizeText(payload.authorName || "", 200);
-  const coverUrl = sanitizeText(payload.coverUrl || "", 600);
+  const coverUrl = sanitizeCoverUrl(payload.coverUrl || "");
   const hardcoverBookId = sanitizeText(payload.hardcoverBookId || "", 80);
   const genres = sanitizeTextArray(payload.genres, 14, 60);
   const moods = sanitizeTextArray(payload.moods, 10, 40);
@@ -627,6 +1054,199 @@ function buildTokenPreview(token) {
 
   return `${token.slice(0, 4)}...${token.slice(-4)}`;
 }
+
+function toIsoFileTimestamp(date = new Date()) {
+  return date.toISOString().replace(/[:.]/g, "-");
+}
+
+function escapeSqliteString(value) {
+  return String(value || "").replaceAll("'", "''");
+}
+
+function isBackupFileName(fileName) {
+  return (
+    typeof fileName === "string" &&
+    fileName.startsWith(`${BACKUP_FILE_PREFIX}-`) &&
+    fileName.endsWith(".db")
+  );
+}
+
+async function ensureBackupDirectory() {
+  await fs.promises.mkdir(BACKUP_DIR, { recursive: true });
+}
+
+async function listBackupFiles(limit = 30) {
+  await ensureBackupDirectory();
+  const entries = await fs.promises.readdir(BACKUP_DIR, { withFileTypes: true });
+  const files = entries
+    .filter((entry) => entry.isFile() && isBackupFileName(entry.name))
+    .map((entry) => entry.name);
+
+  const detailed = await Promise.all(
+    files.map(async (name) => {
+      const filePath = path.join(BACKUP_DIR, name);
+      const stats = await fs.promises.stat(filePath);
+      return {
+        name,
+        sizeBytes: stats.size,
+        modifiedAt: stats.mtime.toISOString()
+      };
+    })
+  );
+
+  return detailed
+    .sort((a, b) => new Date(b.modifiedAt).getTime() - new Date(a.modifiedAt).getTime())
+    .slice(0, Math.min(Math.max(limit, 1), 200));
+}
+
+async function pruneOldBackups() {
+  const backups = await listBackupFiles(5000);
+  const retentionMs = BACKUP_RETENTION_DAYS * 24 * 60 * 60 * 1000;
+  const threshold = Date.now() - retentionMs;
+  let removed = 0;
+
+  for (const backup of backups) {
+    const modifiedAtMs = new Date(backup.modifiedAt).getTime();
+    if (Number.isFinite(modifiedAtMs) && modifiedAtMs < threshold) {
+      await fs.promises.unlink(path.join(BACKUP_DIR, backup.name));
+      removed += 1;
+    }
+  }
+
+  return removed;
+}
+
+function parseAuditDetails(details) {
+  if (!details) {
+    return null;
+  }
+
+  try {
+    return JSON.parse(details);
+  } catch {
+    return details;
+  }
+}
+
+async function writeAdminAuditLog(db, entry) {
+  const actorUserId = Number(entry?.actorUserId);
+  const action = sanitizeText(String(entry?.action || ""), 120);
+  const targetType = sanitizeText(String(entry?.targetType || ""), 80) || null;
+  const targetId = sanitizeText(String(entry?.targetId || ""), 120) || null;
+
+  if (!Number.isInteger(actorUserId) || actorUserId <= 0 || !action) {
+    return;
+  }
+
+  let detailsValue = null;
+  if (entry?.details !== undefined && entry?.details !== null) {
+    if (typeof entry.details === "string") {
+      detailsValue = sanitizeText(entry.details, 4000) || null;
+    } else {
+      try {
+        detailsValue = JSON.stringify(entry.details).slice(0, 4000);
+      } catch {
+        detailsValue = sanitizeText(String(entry.details), 4000) || null;
+      }
+    }
+  }
+
+  await db.run(
+    `
+      INSERT INTO admin_audit_log (actor_user_id, action, target_type, target_id, details)
+      VALUES (?, ?, ?, ?, ?)
+    `,
+    [actorUserId, action, targetType, targetId, detailsValue]
+  );
+}
+
+async function safeAdminAuditLog(db, entry) {
+  try {
+    await writeAdminAuditLog(db, entry);
+  } catch (error) {
+    console.error("[audit] failed to write admin log:", error);
+  }
+}
+
+async function runDatabaseBackup({ reason = "scheduled", actorUserId = null } = {}) {
+  if (backupInProgress) {
+    return { ok: false, skipped: true, error: "Backup already running." };
+  }
+
+  backupInProgress = true;
+
+  try {
+    await ensureBackupDirectory();
+    const db = await initDb();
+    const timestamp = toIsoFileTimestamp();
+    const tmpPath = path.join(BACKUP_DIR, `${BACKUP_FILE_PREFIX}-${timestamp}.tmp.db`);
+    const finalPath = path.join(BACKUP_DIR, `${BACKUP_FILE_PREFIX}-${timestamp}.db`);
+    const sqlitePath = tmpPath.replace(/\\/g, "/");
+
+    // VACUUM INTO creates a consistent SQLite snapshot while app writes continue.
+    await db.exec(`VACUUM INTO '${escapeSqliteString(sqlitePath)}'`);
+    await fs.promises.rename(tmpPath, finalPath);
+
+    const stats = await fs.promises.stat(finalPath);
+    const removed = await pruneOldBackups();
+
+    if (actorUserId) {
+      await safeAdminAuditLog(db, {
+        actorUserId,
+        action: "admin.backup.run",
+        targetType: "backup",
+        targetId: path.basename(finalPath),
+        details: { reason, sizeBytes: stats.size, removedOldFiles: removed }
+      });
+    }
+
+    console.log(
+      `[backup] created ${finalPath} (${stats.size} bytes), reason=${reason}, removedOld=${removed}`
+    );
+
+    return {
+      ok: true,
+      file: path.basename(finalPath),
+      sizeBytes: stats.size,
+      removedOldFiles: removed
+    };
+  } catch (error) {
+    console.error(`[backup] failed (${reason}):`, error);
+    return { ok: false, skipped: false, error: error.message || "Backup failed." };
+  } finally {
+    backupInProgress = false;
+  }
+}
+
+function startBackupScheduler() {
+  if (!BACKUP_ENABLED) {
+    console.log("[backup] scheduler disabled.");
+    return;
+  }
+
+  const intervalMs = BACKUP_INTERVAL_MINUTES * 60 * 1000;
+  console.log(
+    `[backup] scheduler enabled: interval=${BACKUP_INTERVAL_MINUTES}m retention=${BACKUP_RETENTION_DAYS}d dir=${BACKUP_DIR}`
+  );
+
+  // Run once shortly after startup, then continue on interval.
+  setTimeout(() => {
+    runDatabaseBackup({ reason: "startup" }).catch((error) => {
+      console.error("[backup] startup run failed:", error);
+    });
+  }, 30 * 1000);
+
+  backupIntervalHandle = setInterval(() => {
+    runDatabaseBackup({ reason: "scheduled" }).catch((error) => {
+      console.error("[backup] scheduled run failed:", error);
+    });
+  }, intervalMs);
+
+  if (typeof backupIntervalHandle?.unref === "function") {
+    backupIntervalHandle.unref();
+  }
+}
+
 function stripHtmlTags(value) {
   return String(value || "").replace(/<[^>]*>/g, "");
 }
@@ -791,7 +1411,7 @@ function parseHardcoverResult(raw, index) {
     seriesTitle,
     seriesTotal: seriesTotal && seriesTotal > 0 ? seriesTotal : null,
     authorNames,
-    imageUrl: sanitizeText(imageUrl, 600),
+    imageUrl: sanitizeCoverUrl(imageUrl),
     rating,
     ratingsCount,
     pages,
@@ -802,14 +1422,6 @@ function parseHardcoverResult(raw, index) {
   };
 }
 
-
-function escapeGraphQLString(value) {
-  return String(value)
-    .replaceAll("\\", "\\\\")
-    .replaceAll("\"", "\\\"")
-    .replaceAll("\n", " ")
-    .replaceAll("\r", " ");
-}
 
 function parseApiErrorMessage(payload) {
   if (!payload) {
@@ -860,27 +1472,14 @@ function getHardcoverTokenCandidates(rawToken) {
 }
 
 async function requestHardcoverSearch(query, token) {
-  const baseTokens = getHardcoverTokenCandidates(token);
-  if (baseTokens.length === 0) {
+  const tokenCandidates = getHardcoverTokenCandidates(token);
+  if (tokenCandidates.length === 0) {
     return {
       ok: false,
       status: 401,
       payload: { message: "Leerer oder ungültiger Token." }
     };
   }
-
-  const graphqlQueryInline = `
-    query BooksByBookname {
-      search(
-        query: "${escapeGraphQLString(query)}",
-        query_type: "Book",
-        per_page: 5,
-        page: 1
-      ) {
-        results
-      }
-    }
-  `;
 
   const graphqlQueryWithVariables = `
     query BooksByBookname($bookName: String!) {
@@ -895,20 +1494,13 @@ async function requestHardcoverSearch(query, token) {
     }
   `;
 
-  const requestBodies = [
-    {
-      query: graphqlQueryInline,
-      variables: {},
-      operationName: "BooksByBookname"
+  const requestBody = {
+    query: graphqlQueryWithVariables,
+    variables: {
+      bookName: query
     },
-    {
-      query: graphqlQueryWithVariables,
-      variables: {
-        bookName: query
-      },
-      operationName: "BooksByBookname"
-    }
-  ];
+    operationName: "BooksByBookname"
+  };
 
   let lastAttempt = {
     ok: false,
@@ -916,56 +1508,42 @@ async function requestHardcoverSearch(query, token) {
     payload: null
   };
 
-  for (const baseToken of baseTokens) {
-    const authorizationValues = [baseToken, `Bearer ${baseToken}`, `Token ${baseToken}`];
+  for (const candidate of tokenCandidates) {
+    const response = await fetch(HARDCOVER_ENDPOINT, {
+      method: "POST",
+      headers: {
+        "content-type": "application/json",
+        accept: "application/json",
+        authorization: candidate
+      },
+      body: JSON.stringify(requestBody)
+    });
 
-    for (const authorizationValue of authorizationValues) {
-      const authHeaders = [
-        { authorization: authorizationValue },
-        { Authorization: authorizationValue },
-        { "x-api-key": baseToken }
-      ];
+    const rawText = await response.text();
+    let payload = null;
 
-      for (const requestBody of requestBodies) {
-        for (const authHeader of authHeaders) {
-          const response = await fetch(HARDCOVER_ENDPOINT, {
-            method: "POST",
-            headers: {
-              "content-type": "application/json",
-              accept: "application/json",
-              ...authHeader
-            },
-            body: JSON.stringify(requestBody)
-          });
-
-          const rawText = await response.text();
-          let payload = null;
-
-          if (rawText) {
-            try {
-              payload = JSON.parse(rawText);
-            } catch {
-              payload = { raw: rawText };
-            }
-          }
-
-          const hasGraphQlErrors = Array.isArray(payload?.errors) && payload.errors.length > 0;
-          if (response.ok && !hasGraphQlErrors) {
-            return {
-              ok: true,
-              status: response.status,
-              payload
-            };
-          }
-
-          lastAttempt = {
-            ok: false,
-            status: response.status,
-            payload
-          };
-        }
+    if (rawText) {
+      try {
+        payload = JSON.parse(rawText);
+      } catch {
+        payload = { raw: rawText };
       }
     }
+
+    const hasGraphQlErrors = Array.isArray(payload?.errors) && payload.errors.length > 0;
+    if (response.ok && !hasGraphQlErrors) {
+      return {
+        ok: true,
+        status: response.status,
+        payload
+      };
+    }
+
+    lastAttempt = {
+      ok: false,
+      status: response.status,
+      payload
+    };
   }
 
   return lastAttempt;
@@ -996,6 +1574,15 @@ app.post("/api/auth/login", async (req, res) => {
   const identifier = rawIdentifier.trim();
   const password = String(req.body?.password || "");
 
+  const rateLimitIdentifier = identifier || "unknown";
+  const limitStatus = getLoginRateLimitStatus(req, rateLimitIdentifier);
+  if (limitStatus.blocked) {
+    res.setHeader("Retry-After", String(limitStatus.retryAfterSeconds));
+    return res.status(429).json({
+      error: `Zu viele Login-Versuche. Bitte in ${limitStatus.retryAfterSeconds} Sekunden erneut versuchen.`
+    });
+  }
+
   if (!identifier || !password) {
     return res.status(400).json({ error: "Bitte E-Mail oder Benutzernamen sowie Passwort angeben." });
   }
@@ -1006,25 +1593,19 @@ app.post("/api/auth/login", async (req, res) => {
 
     if (identifier.includes("@")) {
       const email = sanitizeEmail(identifier);
-      user = await db.get("SELECT * FROM users WHERE LOWER(email) = ?", [email]);
+      user = await db.get("SELECT * FROM users WHERE email = ?", [email]);
     } else {
       const username = sanitizeUsername(identifier);
       if (!username) {
         return res.status(400).json({ error: "Bitte E-Mail oder Benutzernamen angeben." });
       }
-      const usernameKey = username.toLowerCase();
-      const matches = await db.all("SELECT * FROM users WHERE LOWER(username) = ?", [usernameKey]);
-      if (matches.length > 1) {
-        return res
-          .status(400)
-          .json({ error: "Benutzername ist nicht eindeutig. Bitte E-Mail verwenden." });
-      }
-      user = matches[0] || null;
+      user = await db.get("SELECT * FROM users WHERE username = ? COLLATE NOCASE", [username]);
     }
 
     const verification = user ? verifyPassword(password, user.password_hash) : { ok: false, legacy: false };
 
     if (!user || !verification.ok) {
+      recordLoginFailure(req, rateLimitIdentifier);
       return res.status(401).json({ error: "Login fehlgeschlagen." });
     }
 
@@ -1042,6 +1623,7 @@ app.post("/api/auth/login", async (req, res) => {
       [user.id, tokenHash, expiresAt]
     );
 
+    clearLoginFailures(req, rateLimitIdentifier);
     res.cookie(SESSION_COOKIE, token, buildSessionCookieOptions(req));
     return res.json({ user: sanitizeUser(user) });
   } catch (error) {
@@ -1079,9 +1661,13 @@ app.post("/api/auth/register", async (req, res) => {
   if (!password || password.length < PASSWORD_MIN_LENGTH) {
     return res.status(400).json({ error: `Passwort muss mindestens ${PASSWORD_MIN_LENGTH} Zeichen haben.` });
   }
+  if (password.length > PASSWORD_MAX_LENGTH) {
+    return res.status(400).json({ error: `Passwort darf maximal ${PASSWORD_MAX_LENGTH} Zeichen haben.` });
+  }
 
-  if (!username) {
-    return res.status(400).json({ error: "Bitte einen Benutzernamen angeben." });
+  const usernameValidationError = validateUsername(username);
+  if (usernameValidationError) {
+    return res.status(400).json({ error: usernameValidationError });
   }
 
   try {
@@ -1089,12 +1675,11 @@ app.post("/api/auth/register", async (req, res) => {
     const stats = await db.get("SELECT COUNT(*) AS count FROM users");
     const hasUsers = (stats?.count || 0) > 0;
     const allowRegistration = await getRegistrationSetting();
-    const existing = await db.get("SELECT id FROM users WHERE LOWER(email) = ?", [email]);
+    const existing = await db.get("SELECT id FROM users WHERE email = ?", [email]);
     if (existing) {
       return res.status(409).json({ error: "Diese E-Mail ist bereits registriert." });
     }
-    const usernameKey = username.toLowerCase();
-    const usernameExists = await db.get("SELECT id FROM users WHERE LOWER(username) = ?", [usernameKey]);
+    const usernameExists = await db.get("SELECT id FROM users WHERE username = ? COLLATE NOCASE", [username]);
     if (usernameExists) {
       return res.status(409).json({ error: "Benutzername ist bereits vergeben." });
     }
@@ -1126,6 +1711,20 @@ app.post("/api/auth/register", async (req, res) => {
 
     const created = await db.get("SELECT id, email, username, role FROM users WHERE id = ?", [result.lastID]);
 
+    if (creator && creator.role === "admin") {
+      await safeAdminAuditLog(db, {
+        actorUserId: creator.id,
+        action: "admin.user.created",
+        targetType: "user",
+        targetId: String(created.id),
+        details: {
+          email: created.email,
+          username: created.username,
+          role: created.role
+        }
+      });
+    }
+
     if (!hasUsers) {
       await db.run("UPDATE mangas SET user_id = ? WHERE user_id IS NULL", [created.id]);
 
@@ -1143,7 +1742,11 @@ app.post("/api/auth/register", async (req, res) => {
 
     return res.status(201).json({ user: sanitizeUser(created) });
   } catch (error) {
-    if (String(error?.message || "").includes("UNIQUE")) {
+    const dbMessage = String(error?.message || "");
+    if (dbMessage.includes("UNIQUE")) {
+      if (dbMessage.includes("users.username") || dbMessage.includes("idx_users_username_nocase")) {
+        return res.status(409).json({ error: "Benutzername ist bereits vergeben." });
+      }
       return res.status(409).json({ error: "Diese E-Mail ist bereits registriert." });
     }
 
@@ -1167,6 +1770,17 @@ app.put("/api/settings/hardcover-token", requireAdmin, async (req, res) => {
 
   try {
     await setSetting(HARDCOVER_TOKEN_KEY, token || null);
+    const db = await initDb();
+    await safeAdminAuditLog(db, {
+      actorUserId: req.user.id,
+      action: token ? "settings.hardcover_token.updated" : "settings.hardcover_token.cleared",
+      targetType: "settings",
+      targetId: HARDCOVER_TOKEN_KEY,
+      details: {
+        hasToken: Boolean(token),
+        tokenPreview: buildTokenPreview(token)
+      }
+    });
     return res.json({ hasToken: Boolean(token), tokenPreview: buildTokenPreview(token) });
   } catch (error) {
     console.error(error);
@@ -1177,15 +1791,15 @@ app.put("/api/settings/hardcover-token", requireAdmin, async (req, res) => {
 app.put("/api/settings/profile", requireAuth, async (req, res) => {
   const username = sanitizeUsername(req.body?.username || "");
 
-  if (!username) {
-    return res.status(400).json({ error: "Bitte einen Benutzernamen angeben." });
+  const usernameValidationError = validateUsername(username);
+  if (usernameValidationError) {
+    return res.status(400).json({ error: usernameValidationError });
   }
 
   try {
     const db = await initDb();
-    const usernameKey = username.toLowerCase();
-    const existing = await db.get("SELECT id FROM users WHERE LOWER(username) = ? AND id != ?", [
-      usernameKey,
+    const existing = await db.get("SELECT id FROM users WHERE username = ? COLLATE NOCASE AND id != ?", [
+      username,
       req.user.id
     ]);
     if (existing) {
@@ -1220,6 +1834,14 @@ app.put("/api/admin/registration", requireAdmin, async (req, res) => {
 
   try {
     await setRegistrationSetting(allowRegistration);
+    const db = await initDb();
+    await safeAdminAuditLog(db, {
+      actorUserId: req.user.id,
+      action: "admin.registration.updated",
+      targetType: "settings",
+      targetId: REGISTRATION_SETTING_KEY,
+      details: { allowRegistration }
+    });
     return res.json({ allowRegistration });
   } catch (error) {
     console.error(error);
@@ -1228,22 +1850,92 @@ app.put("/api/admin/registration", requireAdmin, async (req, res) => {
 });
 
 app.get("/api/admin/users", requireAdmin, async (_req, res) => {
+  const searchQuery = sanitizeText(_req.query.q ?? _req.query.search ?? "", 120);
+  const roleFilter = sanitizeText(_req.query.role || "", 20).toLowerCase();
+  const sortMode = normalizeAdminUserSortMode(_req.query.sort);
+  const orderSql = ADMIN_USER_SORT_SQL[sortMode];
+  const hasPagination =
+    hasQueryValue(_req.query.page) || hasQueryValue(_req.query.pageSize);
+  const page = parseBoundedPositiveInt(_req.query.page, 1, 1, 1000000);
+  const pageSize = parseBoundedPositiveInt(_req.query.pageSize, 50, 1, 500);
+  const offset = (page - 1) * pageSize;
+
   try {
     const db = await initDb();
-    const users = await db.all(`
+    const whereParts = [];
+    const whereParams = [];
+
+    if (ALLOWED_ROLES.includes(roleFilter)) {
+      whereParts.push("users.role = ?");
+      whereParams.push(roleFilter);
+    }
+
+    if (searchQuery) {
+      whereParts.push(
+        "(users.email LIKE ? COLLATE NOCASE OR users.username LIKE ? COLLATE NOCASE)"
+      );
+      const likeValue = `%${searchQuery}%`;
+      whereParams.push(likeValue, likeValue);
+    }
+
+    const whereSql = whereParts.length > 0 ? `WHERE ${whereParts.join(" AND ")}` : "";
+
+    const baseSelectSql = `
       SELECT
         users.id,
         users.email,
         users.username,
         users.role,
         users.created_at,
-        (SELECT COUNT(*) FROM mangas WHERE user_id = users.id) AS entries_count,
-        (SELECT COUNT(*) FROM sessions WHERE user_id = users.id) AS session_count,
-        (SELECT MAX(created_at) FROM sessions WHERE user_id = users.id) AS last_session_at
+        COALESCE(manga_stats.entries_count, 0) AS entries_count,
+        COALESCE(session_stats.session_count, 0) AS session_count,
+        session_stats.last_session_at
       FROM users
-      ORDER BY users.created_at ASC
-    `);
-    return res.json({ users });
+      LEFT JOIN (
+        SELECT user_id, COUNT(*) AS entries_count
+        FROM mangas
+        GROUP BY user_id
+      ) AS manga_stats ON manga_stats.user_id = users.id
+      LEFT JOIN (
+        SELECT user_id, COUNT(*) AS session_count, MAX(created_at) AS last_session_at
+        FROM sessions
+        GROUP BY user_id
+      ) AS session_stats ON session_stats.user_id = users.id
+      ${whereSql}
+    `;
+
+    const countRow = await db.get(
+      `
+        SELECT COUNT(*) AS count
+        FROM users
+        ${whereSql}
+      `,
+      whereParams
+    );
+    const total = Number(countRow?.count || 0);
+
+    let usersQuery = `
+      ${baseSelectSql}
+      ORDER BY ${orderSql}
+    `;
+    const usersParams = [...whereParams];
+
+    if (hasPagination) {
+      usersQuery += `
+        LIMIT ?
+        OFFSET ?
+      `;
+      usersParams.push(pageSize, offset);
+    }
+
+    const users = await db.all(usersQuery, usersParams);
+    return res.json({
+      users,
+      total,
+      page,
+      pageSize,
+      hasMore: hasPagination ? offset + users.length < total : false
+    });
   } catch (error) {
     console.error(error);
     return res.status(500).json({ error: "Nutzer konnten nicht geladen werden." });
@@ -1263,6 +1955,13 @@ app.delete("/api/admin/users/:id/sessions", requireAdmin, async (req, res) => {
   try {
     const db = await initDb();
     const result = await db.run("DELETE FROM sessions WHERE user_id = ?", [id]);
+    await safeAdminAuditLog(db, {
+      actorUserId: req.user.id,
+      action: "admin.user.sessions_cleared",
+      targetType: "user",
+      targetId: String(id),
+      details: { clearedSessions: result.changes || 0 }
+    });
     return res.json({ cleared: result.changes || 0 });
   } catch (error) {
     console.error(error);
@@ -1301,6 +2000,17 @@ app.put("/api/admin/users/:id/role", requireAdmin, async (req, res) => {
     }
 
     await db.run("UPDATE users SET role = ? WHERE id = ?", [role, id]);
+    await safeAdminAuditLog(db, {
+      actorUserId: req.user.id,
+      action: "admin.user.role_changed",
+      targetType: "user",
+      targetId: String(id),
+      details: {
+        email: user.email,
+        oldRole: user.role,
+        newRole: role
+      }
+    });
     const updated = await db.get("SELECT id, email, role, created_at FROM users WHERE id = ?", [id]);
     return res.json({ user: updated });
   } catch (error) {
@@ -1321,6 +2031,11 @@ app.put("/api/admin/users/:id/password", requireAdmin, async (req, res) => {
       .status(400)
       .json({ error: `Passwort muss mindestens ${PASSWORD_MIN_LENGTH} Zeichen haben.` });
   }
+  if (password.length > PASSWORD_MAX_LENGTH) {
+    return res
+      .status(400)
+      .json({ error: `Passwort darf maximal ${PASSWORD_MAX_LENGTH} Zeichen haben.` });
+  }
 
   try {
     const db = await initDb();
@@ -1332,11 +2047,110 @@ app.put("/api/admin/users/:id/password", requireAdmin, async (req, res) => {
 
     const passwordHash = hashPassword(password);
     await db.run("UPDATE users SET password_hash = ? WHERE id = ?", [passwordHash, id]);
+    // Force re-login on all active devices after admin reset.
+    await db.run("DELETE FROM sessions WHERE user_id = ?", [id]);
+    await safeAdminAuditLog(db, {
+      actorUserId: req.user.id,
+      action: "admin.user.password_reset",
+      targetType: "user",
+      targetId: String(id),
+      details: { sessionsCleared: true }
+    });
 
     return res.json({ ok: true });
   } catch (error) {
     console.error(error);
     return res.status(500).json({ error: "Passwort konnte nicht gespeichert werden." });
+  }
+});
+
+app.get("/api/admin/audit", requireAdmin, async (req, res) => {
+  const requestedLimit = parsePositiveInt(req.query.limit);
+  const limit = requestedLimit === null ? 100 : Math.min(requestedLimit, 300);
+
+  try {
+    const db = await initDb();
+    const rows = await db.all(
+      `
+        SELECT
+          admin_audit_log.id,
+          admin_audit_log.action,
+          admin_audit_log.target_type,
+          admin_audit_log.target_id,
+          admin_audit_log.details,
+          admin_audit_log.created_at,
+          users.id AS actor_id,
+          users.email AS actor_email,
+          users.username AS actor_username
+        FROM admin_audit_log
+        LEFT JOIN users ON users.id = admin_audit_log.actor_user_id
+        ORDER BY admin_audit_log.created_at DESC, admin_audit_log.id DESC
+        LIMIT ?
+      `,
+      [limit]
+    );
+
+    const entries = rows.map((row) => ({
+      id: row.id,
+      action: row.action,
+      targetType: row.target_type || "",
+      targetId: row.target_id || "",
+      details: parseAuditDetails(row.details),
+      createdAt: row.created_at,
+      actor: {
+        id: row.actor_id || null,
+        email: row.actor_email || "",
+        username: row.actor_username || ""
+      }
+    }));
+
+    return res.json({ entries });
+  } catch (error) {
+    console.error(error);
+    return res.status(500).json({ error: "Audit-Log konnte nicht geladen werden." });
+  }
+});
+
+app.get("/api/admin/backups", requireAdmin, async (req, res) => {
+  const requestedLimit = parsePositiveInt(req.query.limit);
+  const limit = requestedLimit === null ? 30 : Math.min(requestedLimit, 200);
+
+  try {
+    const files = await listBackupFiles(limit);
+    return res.json({
+      enabled: BACKUP_ENABLED,
+      directory: BACKUP_DIR,
+      intervalMinutes: BACKUP_INTERVAL_MINUTES,
+      retentionDays: BACKUP_RETENTION_DAYS,
+      files
+    });
+  } catch (error) {
+    console.error(error);
+    return res.status(500).json({ error: "Backup-Liste konnte nicht geladen werden." });
+  }
+});
+
+app.post("/api/admin/backups/run", requireAdmin, async (req, res) => {
+  try {
+    const result = await runDatabaseBackup({
+      reason: "manual-api",
+      actorUserId: req.user.id
+    });
+
+    if (!result.ok) {
+      const statusCode = result.skipped ? 409 : 500;
+      return res.status(statusCode).json({ error: result.error || "Backup fehlgeschlagen." });
+    }
+
+    return res.json({
+      ok: true,
+      file: result.file,
+      sizeBytes: result.sizeBytes,
+      removedOldFiles: result.removedOldFiles
+    });
+  } catch (error) {
+    console.error(error);
+    return res.status(500).json({ error: "Backup fehlgeschlagen." });
   }
 });
 
@@ -1519,94 +2333,94 @@ app.post("/api/import/csv", requireAuth, async (req, res) => {
     let imported = 0;
     let skipped = 0;
     const errors = [];
+    const insertStatement = db.prepare(`
+      INSERT INTO mangas (
+        user_id,
+        title,
+        total_volumes,
+        owned_volumes,
+        status,
+        notes,
+        media_type,
+        author_name,
+        cover_url,
+        hardcover_book_id,
+        missing_volumes,
+        genres,
+        moods,
+        content_warnings,
+        rating,
+        ratings_count,
+        pages,
+        release_year,
+        user_rating,
+        user_review
+      )
+      VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?)
+    `);
 
-    for (let i = 1; i < rows.length; i += 1) {
-      const row = rows[i];
-      const getValue = (key) => row[headerIndex[key]] ?? "";
+    const runImportTransaction = db.transaction(() => {
+      for (let i = 1; i < rows.length; i += 1) {
+        const row = rows[i];
+        const getValue = (key) => row[headerIndex[key]] ?? "";
 
-      const title = sanitizeText(getValue("title"), 120);
-      if (!title) {
-        skipped += 1;
-        continue;
-      }
-
-      const rawMediaType = sanitizeText(getValue("media_type") || "manga", 20).toLowerCase();
-      const mediaType = ALLOWED_MEDIA_TYPES.includes(rawMediaType) ? rawMediaType : "manga";
-      const dedupeKey = buildImportKey(title, mediaType);
-      if (existingKeys.has(dedupeKey) || seenKeys.has(dedupeKey)) {
-        skipped += 1;
-        continue;
-      }
-
-      let status = sanitizeText(getValue("status") || "Sammle", 40);
-      if (!ALLOWED_STATUS.includes(status)) {
-        status = "Sammle";
-      }
-
-      let ownedVolumes = parseNonNegativeInt(getValue("owned_volumes"));
-      let totalVolumes = parseOptionalInt(getValue("total_volumes"));
-      let missingVolumes = parseCsvNumbers(getValue("missing_volumes"));
-
-      if (mediaType === "book") {
-        ownedVolumes = 1;
-        totalVolumes = 1;
-        missingVolumes = [];
-      } else {
-        if (ownedVolumes === null) {
-          ownedVolumes = 0;
+        const title = sanitizeText(getValue("title"), 120);
+        if (!title) {
+          skipped += 1;
+          continue;
         }
 
-        if (totalVolumes !== null && totalVolumes < ownedVolumes) {
-          totalVolumes = ownedVolumes;
+        const rawMediaType = sanitizeText(getValue("media_type") || "manga", 20).toLowerCase();
+        const mediaType = ALLOWED_MEDIA_TYPES.includes(rawMediaType) ? rawMediaType : "manga";
+        const dedupeKey = buildImportKey(title, mediaType);
+        if (existingKeys.has(dedupeKey) || seenKeys.has(dedupeKey)) {
+          skipped += 1;
+          continue;
         }
 
-        missingVolumes = normalizeMissingVolumes(missingVolumes, totalVolumes);
-      }
+        let status = sanitizeText(getValue("status") || "Sammle", 40);
+        if (!ALLOWED_STATUS.includes(status)) {
+          status = "Sammle";
+        }
 
-      const authorName = sanitizeText(getValue("author_name"), 200);
-      const notes = sanitizeText(getValue("notes"), 600);
-      const coverUrl = sanitizeText(getValue("cover_url"), 600);
-      const hardcoverBookId = sanitizeText(getValue("hardcover_book_id"), 80);
-      const genres = parseCsvList(getValue("genres"), 60);
-      const moods = parseCsvList(getValue("moods"), 40);
-      const contentWarnings = parseCsvList(getValue("content_warnings"), 60);
-      const rating = parseOptionalFloat(getValue("rating"), 5);
-      const ratingsCount = parseOptionalInt(getValue("ratings_count"));
-      const pages = parseOptionalInt(getValue("pages"));
-      const releaseYear = parseOptionalInt(getValue("release_year"));
-      const userRatingRaw = parseOptionalInt(getValue("user_rating"));
-      const userRating =
-        userRatingRaw !== null && userRatingRaw >= 1 && userRatingRaw <= 5 ? userRatingRaw : null;
-      const userReview = sanitizeText(getValue("user_review"), 1200);
+        let ownedVolumes = parseNonNegativeInt(getValue("owned_volumes"));
+        let totalVolumes = parseOptionalInt(getValue("total_volumes"));
+        let missingVolumes = parseCsvNumbers(getValue("missing_volumes"));
 
-      try {
-        await db.run(
-          `
-            INSERT INTO mangas (
-              user_id,
-              title,
-              total_volumes,
-              owned_volumes,
-              status,
-              notes,
-              media_type,
-              author_name,
-              cover_url,
-              hardcover_book_id,
-              missing_volumes,
-              genres,
-              moods,
-              content_warnings,
-              rating,
-              ratings_count,
-              pages,
-              release_year,
-              user_rating,
-              user_review
-            )
-            VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?)
-          `,
-          [
+        if (mediaType === "book") {
+          ownedVolumes = 1;
+          totalVolumes = 1;
+          missingVolumes = [];
+        } else {
+          if (ownedVolumes === null) {
+            ownedVolumes = 0;
+          }
+
+          if (totalVolumes !== null && totalVolumes < ownedVolumes) {
+            totalVolumes = ownedVolumes;
+          }
+
+          missingVolumes = normalizeMissingVolumes(missingVolumes, totalVolumes);
+        }
+
+        const authorName = sanitizeText(getValue("author_name"), 200);
+        const notes = sanitizeText(getValue("notes"), 600);
+        const coverUrl = sanitizeCoverUrl(getValue("cover_url"));
+        const hardcoverBookId = sanitizeText(getValue("hardcover_book_id"), 80);
+        const genres = parseCsvList(getValue("genres"), 60);
+        const moods = parseCsvList(getValue("moods"), 40);
+        const contentWarnings = parseCsvList(getValue("content_warnings"), 60);
+        const rating = parseOptionalFloat(getValue("rating"), 5);
+        const ratingsCount = parseOptionalInt(getValue("ratings_count"));
+        const pages = parseOptionalInt(getValue("pages"));
+        const releaseYear = parseOptionalInt(getValue("release_year"));
+        const userRatingRaw = parseOptionalInt(getValue("user_rating"));
+        const userRating =
+          userRatingRaw !== null && userRatingRaw >= 1 && userRatingRaw <= 5 ? userRatingRaw : null;
+        const userReview = sanitizeText(getValue("user_review"), 1200);
+
+        try {
+          insertStatement.run(
             req.user.id,
             title,
             totalVolumes,
@@ -1627,15 +2441,18 @@ app.post("/api/import/csv", requireAuth, async (req, res) => {
             releaseYear ?? null,
             userRating ?? null,
             userReview || null
-          ]
-        );
-        imported += 1;
-        seenKeys.add(dedupeKey);
-      } catch (error) {
-        skipped += 1;
-        errors.push(`Zeile ${i + 1}: ${error.message || "Import fehlgeschlagen"}`);
+          );
+
+          imported += 1;
+          seenKeys.add(dedupeKey);
+        } catch (error) {
+          skipped += 1;
+          errors.push(`Zeile ${i + 1}: ${error.message || "Import fehlgeschlagen"}`);
+        }
       }
-    }
+    });
+
+    runImportTransaction();
 
     return res.json({ imported, skipped, errors: errors.slice(0, 10) });
   } catch (error) {
@@ -1713,15 +2530,148 @@ app.get("/api/hardcover/search", requireAuth, async (req, res) => {
 });
 
 app.get("/api/manga", requireAuth, async (req, res) => {
+  const sortMode = normalizeSortMode(req.query.sort);
+  const orderSql = MANGA_SORT_SQL[sortMode];
+  const genreFilter = normalizeGenreFilter(req.query.genre);
+  const searchTerm = sanitizeText(req.query.q ?? req.query.search ?? "", 200);
+  const ftsQuery = buildFtsQuery(searchTerm);
+  const hasPagination =
+    hasQueryValue(req.query.page) || hasQueryValue(req.query.pageSize);
+  const page = parseBoundedPositiveInt(req.query.page, 1, 1, 1000000);
+  const pageSize = parseBoundedPositiveInt(req.query.pageSize, 120, 1, 500);
+  const offset = (page - 1) * pageSize;
+
   try {
     const db = await initDb();
-    const mangas = await db.all("SELECT * FROM mangas WHERE user_id = ? ORDER BY updated_at DESC, id DESC", [
-      req.user.id
-    ]);
-    res.json(mangas.map(normalizeMangaRow));
+    const params = [req.user.id];
+    const filterParams = [req.user.id];
+
+    let sql = `
+      SELECT m.*
+      FROM mangas AS m
+    `;
+
+    if (ftsQuery) {
+      sql += `
+        JOIN mangas_fts ON mangas_fts.rowid = m.id
+      `;
+      params.push(req.user.id, ftsQuery);
+      filterParams.push(req.user.id, ftsQuery);
+    }
+
+    sql += `
+      WHERE m.user_id = ?
+    `;
+
+    if (ftsQuery) {
+      sql += `
+        AND mangas_fts.user_id = ?
+        AND mangas_fts MATCH ?
+      `;
+    }
+
+    if (genreFilter) {
+      sql += `
+        AND json_valid(m.genres)
+        AND EXISTS (
+          SELECT 1
+          FROM json_each(m.genres)
+          WHERE LOWER(TRIM(json_each.value)) = LOWER(?)
+        )
+      `;
+      params.push(genreFilter);
+      filterParams.push(genreFilter);
+    }
+
+    sql += `
+      ORDER BY ${orderSql}
+    `;
+
+    if (hasPagination) {
+      sql += `
+        LIMIT ?
+        OFFSET ?
+      `;
+      params.push(pageSize, offset);
+    }
+
+    const mangas = await db.all(sql, params);
+    const normalized = mangas.map(normalizeMangaRow);
+
+    if (!hasPagination) {
+      return res.json(normalized);
+    }
+
+    let countSql = `
+      SELECT COUNT(*) AS count
+      FROM mangas AS m
+    `;
+
+    if (ftsQuery) {
+      countSql += `
+        JOIN mangas_fts ON mangas_fts.rowid = m.id
+      `;
+    }
+
+    countSql += `
+      WHERE m.user_id = ?
+    `;
+
+    if (ftsQuery) {
+      countSql += `
+        AND mangas_fts.user_id = ?
+        AND mangas_fts MATCH ?
+      `;
+    }
+
+    if (genreFilter) {
+      countSql += `
+        AND json_valid(m.genres)
+        AND EXISTS (
+          SELECT 1
+          FROM json_each(m.genres)
+          WHERE LOWER(TRIM(json_each.value)) = LOWER(?)
+        )
+      `;
+    }
+
+    const countRow = await db.get(countSql, filterParams);
+    const total = Number(countRow?.count || 0);
+
+    return res.json({
+      items: normalized,
+      total,
+      page,
+      pageSize,
+      hasMore: offset + normalized.length < total
+    });
   } catch (error) {
     console.error(error);
-    res.status(500).json({ error: "Fehler beim Laden der Manga-Liste." });
+    return res.status(500).json({ error: "Fehler beim Laden der Manga-Liste." });
+  }
+});
+
+app.get("/api/manga/genres", requireAuth, async (req, res) => {
+  try {
+    const db = await initDb();
+    const rows = await db.all("SELECT genres FROM mangas WHERE user_id = ?", [req.user.id]);
+    const genres = new Set();
+
+    rows.forEach((row) => {
+      parseTextArrayFromDb(row?.genres).forEach((genre) => {
+        const normalized = sanitizeText(String(genre || ""), 80);
+        if (normalized) {
+          genres.add(normalized);
+        }
+      });
+    });
+
+    return res.json({
+      genres: Array.from(genres).sort((a, b) => a.localeCompare(b, "de"))
+    });
+  } catch (error) {
+    console.error(error);
+    return res.status(500).json({ error: "Genres konnten nicht geladen werden." });
   }
 });
 
@@ -2138,6 +3088,7 @@ app.use((req, res) => {
 
 async function start() {
   await initDb();
+  startBackupScheduler();
 
   app.listen(PORT, () => {
     console.log(`Manga Tracker läuft auf http://localhost:${PORT}`);

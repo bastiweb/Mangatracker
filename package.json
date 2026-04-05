@@ -5,7 +5,9 @@
   "main": "src/server.js",
   "scripts": {
     "start": "node src/server.js",
-    "dev": "node --watch src/server.js"
+    "dev": "node --watch src/server.js",
+    "test": "npm run test:integration",
+    "test:integration": "node --test tests/integration/api.integration.test.js"
   },
   "keywords": [
     "manga",
@@ -20,7 +22,7 @@
     "better-sqlite3-multiple-ciphers": "^12.2.0"
   },
   "overrides": {
-    "path-to-regexp": "8.3.0",
+    "path-to-regexp": "8.4.2",
     "qs": "6.15.0",
     "tar": "7.5.11"
   }

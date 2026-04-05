@@ -14,6 +14,7 @@ const importFileInput = document.getElementById("import-file");
 const importMessage = document.getElementById("import-message");
 
 const t = (key, vars) => (window.MangaI18n && window.MangaI18n.t ? window.MangaI18n.t(key, vars) : key);
+const usernamePattern = /^[a-zA-Z0-9._\- ]+$/;
 
 let cachedTokenPayload = null;
 
@@ -50,6 +51,24 @@ function setImportMessage(text, isError = false) {
 
   importMessage.textContent = text;
   importMessage.style.color = isError ? "var(--danger)" : "var(--muted)";
+}
+
+function validateUsernameInput(rawValue) {
+  // Mirror backend username policy for immediate user feedback.
+  const username = String(rawValue || "").trim();
+  if (!username) {
+    return t("msg_username_required");
+  }
+  if (username.length < 3) {
+    return t("msg_username_too_short");
+  }
+  if (username.includes("@")) {
+    return t("msg_username_no_at");
+  }
+  if (!usernamePattern.test(username)) {
+    return t("msg_username_invalid_chars");
+  }
+  return "";
 }
 
 function setTokenFormEnabled(enabled) {
@@ -149,8 +168,9 @@ profileForm?.addEventListener("submit", async (event) => {
   event.preventDefault();
 
   const username = profileUsernameInput?.value.trim() || "";
-  if (!username) {
-    setProfileMessage(t("msg_username_required"), true);
+  const usernameError = validateUsernameInput(username);
+  if (usernameError) {
+    setProfileMessage(usernameError, true);
     return;
   }
 

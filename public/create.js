@@ -62,12 +62,31 @@ function escapeHtml(text) {
     .replaceAll("'", "&#39;");
 }
 
-function getCoverMarkup(url, alt) {
-  if (!url) {
+function sanitizeCoverUrl(url) {
+  const raw = String(url || "").trim();
+  if (!raw) {
     return "";
   }
 
-  const safeUrl = escapeHtml(url);
+  try {
+    const parsed = new URL(raw, window.location.origin);
+    // Keep image sources restricted to http(s).
+    if (parsed.protocol !== "https:" && parsed.protocol !== "http:") {
+      return "";
+    }
+    return parsed.toString();
+  } catch {
+    return "";
+  }
+}
+
+function getCoverMarkup(url, alt) {
+  const safeCoverUrl = sanitizeCoverUrl(url);
+  if (!safeCoverUrl) {
+    return "";
+  }
+
+  const safeUrl = escapeHtml(safeCoverUrl);
   const safeAlt = escapeHtml(alt);
   return `<img src="${safeUrl}" alt="${safeAlt}" loading="lazy" />`;
 }
@@ -242,7 +261,10 @@ function renderHardcoverResults(results) {
   hardcoverResults.innerHTML = "";
 
   if (!results.length) {
-    hardcoverResults.innerHTML = `<p class=\"muted\">${t("msg_no_results")}</p>`;
+    const empty = document.createElement("p");
+    empty.className = "muted";
+    empty.textContent = t("msg_no_results");
+    hardcoverResults.appendChild(empty);
     return;
   }
 
@@ -286,7 +308,7 @@ function renderHardcoverResults(results) {
         title: displayTitle,
         seriesTitle,
         authorName,
-        imageUrl: entry.imageUrl || "",
+        imageUrl: sanitizeCoverUrl(entry.imageUrl || ""),
         seriesTotal,
         rating: entry.rating ?? null,
         ratingsCount: entry.ratingsCount ?? null,
@@ -400,7 +422,7 @@ function fillFormFromManga(manga) {
       id: manga.hardcover_book_id || "",
       title: manga.title,
       authorName: manga.author_name || "",
-      imageUrl: manga.cover_url || "",
+      imageUrl: sanitizeCoverUrl(manga.cover_url || ""),
       seriesTotal: manga.total_volumes ?? null,
       rating: manga.rating ?? null,
       ratingsCount: manga.ratings_count ?? null,
