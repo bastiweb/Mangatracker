@@ -174,26 +174,6 @@ docker compose ps
 
 and open [https://localhost](https://localhost).
 
-## Publish Docker image (Docker Hub)
-
-Example with Docker Hub user `YOUR_USER` and image `manga-tracker`:
-
-```bash
-docker build -t YOUR_USER/manga-tracker:1.0.0 .
-docker tag YOUR_USER/manga-tracker:1.0.0 YOUR_USER/manga-tracker:latest
-docker login
-docker push YOUR_USER/manga-tracker:1.0.0
-docker push YOUR_USER/manga-tracker:latest
-```
-
-Run the published image:
-
-```bash
-docker run -d -p 3003:3003 -e DB_FILE=/data/manga.db -v manga_data:/data YOUR_USER/manga-tracker:latest
-```
-
-Note: The image alone serves HTTP on port `3003`. Use `docker-compose.yml` with Caddy for HTTPS.
-
 ## CI quality and security gates
 
 The GitHub workflow runs before Docker publishing:
