@@ -160,6 +160,22 @@ function buildUserRow(user) {
   actionCell.appendChild(actionsWrapper);
   row.appendChild(actionCell);
 
+  [
+    t("th_user_email"),
+    t("th_user_username"),
+    t("th_user_role"),
+    t("th_user_entries"),
+    t("th_user_sessions"),
+    t("th_user_last_login"),
+    t("th_user_created"),
+    t("th_user_action")
+  ].forEach((label, index) => {
+    const cell = row.querySelectorAll("td")[index];
+    if (cell) {
+      cell.dataset.label = label;
+    }
+  });
+
   saveBtn.addEventListener("click", async () => {
     saveBtn.disabled = true;
     setUsersMessage(t("msg_role_saving"));

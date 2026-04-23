@@ -2,6 +2,7 @@ const express = require("express");
 const crypto = require("crypto");
 const fs = require("fs");
 const path = require("path");
+const { promisify } = require("util");
 const { initDb } = require("./db");
 
 const app = express();
@@ -21,6 +22,9 @@ const LOGIN_BLOCK_MS = 15 * 60 * 1000;
 const LOGIN_MAX_ATTEMPTS = 15;
 const LOGIN_RATE_LIMIT_CLEANUP_MS = 5 * 60 * 1000;
 const LOGIN_RATE_LIMIT_MAX_ENTRIES = 10000;
+const HARDCOVER_SEARCH_WINDOW_MS = 60 * 1000;
+const HARDCOVER_SEARCH_BLOCK_MS = 5 * 60 * 1000;
+const HARDCOVER_SEARCH_MAX_REQUESTS = 20;
 const EMERGENCY_RESET_KEY = String(process.env.EMERGENCY_RESET_KEY || "").trim();
 const TRUST_PROXY = String(process.env.TRUST_PROXY || "false").toLowerCase() === "true";
 const CSRF_TRUSTED_ORIGINS = String(process.env.CSRF_TRUSTED_ORIGINS || "")
@@ -37,6 +41,7 @@ const BACKUP_FILE_PREFIX = "manga-db-backup";
 const HARDCOVER_TOKEN_KEY = "hardcover_api_token";
 const REGISTRATION_SETTING_KEY = "allow_registration";
 const HARDCOVER_ENDPOINT = "https://api.hardcover.app/v1/graphql";
+const HARDCOVER_REQUEST_TIMEOUT_MS = 10 * 1000;
 const MANGA_SORT_SQL = {
   updated_desc: "m.updated_at DESC, m.id DESC",
   title_asc: "m.title COLLATE NOCASE ASC, m.id ASC",
@@ -53,11 +58,14 @@ const ADMIN_USER_SORT_SQL = {
   sessions_desc: "session_count DESC, users.id DESC",
   last_login_desc: "last_session_at DESC, users.id DESC"
 };
-const loginRateLimitState = new Map();
-let lastRateLimitCleanupAt = 0;
+const attemptRateLimitState = new Map();
+const hardcoverSearchRateLimitState = new Map();
+let lastAttemptRateLimitCleanupAt = 0;
+let lastHardcoverSearchRateLimitCleanupAt = 0;
 let lastSessionCleanupAt = 0;
 let backupInProgress = false;
 let backupIntervalHandle = null;
+const scryptAsync = promisify(crypto.scrypt);
 
 function parseEnvPositiveInt(value, fallback) {
   const parsed = Number(value);
@@ -83,8 +91,7 @@ app.use((req, res, next) => {
   res.setHeader("Cross-Origin-Resource-Policy", "same-origin");
   res.setHeader("Cross-Origin-Opener-Policy", "same-origin");
 
-  const forwardedProto = String(req.headers["x-forwarded-proto"] || "");
-  const isSecureRequest = req.secure || forwardedProto.toLowerCase().includes("https");
+  const isSecureRequest = Boolean(req.secure);
   if (isSecureRequest) {
     // Enforce HTTPS after first secure response.
     res.setHeader("Strict-Transport-Security", "max-age=31536000; includeSubDomains");
@@ -456,37 +463,37 @@ function getRateLimitKey(req, identifier = "") {
   return `${ip}|${normalizedIdentifier}`;
 }
 
-function cleanupLoginRateLimitState(now = Date.now()) {
-  if (now - lastRateLimitCleanupAt < LOGIN_RATE_LIMIT_CLEANUP_MS) {
+function cleanupAttemptRateLimitState(now = Date.now()) {
+  if (now - lastAttemptRateLimitCleanupAt < LOGIN_RATE_LIMIT_CLEANUP_MS) {
     return;
   }
-  lastRateLimitCleanupAt = now;
+  lastAttemptRateLimitCleanupAt = now;
 
-  for (const [key, entry] of loginRateLimitState.entries()) {
+  for (const [key, entry] of attemptRateLimitState.entries()) {
     const blocked = entry.blockedUntil && entry.blockedUntil > now;
     const windowActive = now - entry.windowStartedAt <= LOGIN_WINDOW_MS;
     if (!blocked && !windowActive) {
-      loginRateLimitState.delete(key);
+      attemptRateLimitState.delete(key);
     }
   }
 
-  if (loginRateLimitState.size <= LOGIN_RATE_LIMIT_MAX_ENTRIES) {
+  if (attemptRateLimitState.size <= LOGIN_RATE_LIMIT_MAX_ENTRIES) {
     return;
   }
 
-  for (const key of loginRateLimitState.keys()) {
-    loginRateLimitState.delete(key);
-    if (loginRateLimitState.size <= LOGIN_RATE_LIMIT_MAX_ENTRIES) {
+  for (const key of attemptRateLimitState.keys()) {
+    attemptRateLimitState.delete(key);
+    if (attemptRateLimitState.size <= LOGIN_RATE_LIMIT_MAX_ENTRIES) {
       break;
     }
   }
 }
 
-function getLoginRateLimitStatus(req, identifier = "") {
-  cleanupLoginRateLimitState();
+function getAttemptRateLimitStatus(req, identifier = "") {
+  cleanupAttemptRateLimitState();
   const key = getRateLimitKey(req, identifier);
   const now = Date.now();
-  const entry = loginRateLimitState.get(key);
+  const entry = attemptRateLimitState.get(key);
 
   if (!entry) {
     return { blocked: false, retryAfterSeconds: 0 };
@@ -500,7 +507,7 @@ function getLoginRateLimitStatus(req, identifier = "") {
   }
 
   if (entry.blockedUntil && entry.blockedUntil <= now) {
-    loginRateLimitState.set(key, {
+    attemptRateLimitState.set(key, {
       windowStartedAt: now,
       failures: 0,
       blockedUntil: null
@@ -509,20 +516,20 @@ function getLoginRateLimitStatus(req, identifier = "") {
   }
 
   if (now - entry.windowStartedAt > LOGIN_WINDOW_MS) {
-    loginRateLimitState.delete(key);
+    attemptRateLimitState.delete(key);
   }
 
   return { blocked: false, retryAfterSeconds: 0 };
 }
 
-function recordLoginFailure(req, identifier = "") {
-  cleanupLoginRateLimitState();
+function recordAttemptFailure(req, identifier = "") {
+  cleanupAttemptRateLimitState();
   const key = getRateLimitKey(req, identifier);
   const now = Date.now();
-  const entry = loginRateLimitState.get(key);
+  const entry = attemptRateLimitState.get(key);
 
   if (!entry || now - entry.windowStartedAt > LOGIN_WINDOW_MS) {
-    loginRateLimitState.set(key, {
+    attemptRateLimitState.set(key, {
       windowStartedAt: now,
       failures: 1,
       blockedUntil: null
@@ -534,12 +541,93 @@ function recordLoginFailure(req, identifier = "") {
   if (entry.failures >= LOGIN_MAX_ATTEMPTS) {
     entry.blockedUntil = now + LOGIN_BLOCK_MS;
   }
-  loginRateLimitState.set(key, entry);
+  attemptRateLimitState.set(key, entry);
 }
 
-function clearLoginFailures(req, identifier = "") {
+function clearAttemptFailures(req, identifier = "") {
   const key = getRateLimitKey(req, identifier);
-  loginRateLimitState.delete(key);
+  attemptRateLimitState.delete(key);
+}
+
+function cleanupHardcoverSearchRateLimitState(now = Date.now()) {
+  if (now - lastHardcoverSearchRateLimitCleanupAt < LOGIN_RATE_LIMIT_CLEANUP_MS) {
+    return;
+  }
+  lastHardcoverSearchRateLimitCleanupAt = now;
+
+  for (const [key, entry] of hardcoverSearchRateLimitState.entries()) {
+    const blocked = entry.blockedUntil && entry.blockedUntil > now;
+    const windowActive = now - entry.windowStartedAt <= HARDCOVER_SEARCH_WINDOW_MS;
+    if (!blocked && !windowActive) {
+      hardcoverSearchRateLimitState.delete(key);
+    }
+  }
+
+  if (hardcoverSearchRateLimitState.size <= LOGIN_RATE_LIMIT_MAX_ENTRIES) {
+    return;
+  }
+
+  for (const key of hardcoverSearchRateLimitState.keys()) {
+    hardcoverSearchRateLimitState.delete(key);
+    if (hardcoverSearchRateLimitState.size <= LOGIN_RATE_LIMIT_MAX_ENTRIES) {
+      break;
+    }
+  }
+}
+
+function getHardcoverSearchRateLimitStatus(req) {
+  cleanupHardcoverSearchRateLimitState();
+  const key = getClientAddress(req).toLowerCase();
+  const now = Date.now();
+  const entry = hardcoverSearchRateLimitState.get(key);
+
+  if (!entry) {
+    return { blocked: false, retryAfterSeconds: 0 };
+  }
+
+  if (entry.blockedUntil && entry.blockedUntil > now) {
+    return {
+      blocked: true,
+      retryAfterSeconds: Math.ceil((entry.blockedUntil - now) / 1000)
+    };
+  }
+
+  if (entry.blockedUntil && entry.blockedUntil <= now) {
+    hardcoverSearchRateLimitState.set(key, {
+      windowStartedAt: now,
+      count: 0,
+      blockedUntil: null
+    });
+    return { blocked: false, retryAfterSeconds: 0 };
+  }
+
+  if (now - entry.windowStartedAt > HARDCOVER_SEARCH_WINDOW_MS) {
+    hardcoverSearchRateLimitState.delete(key);
+  }
+
+  return { blocked: false, retryAfterSeconds: 0 };
+}
+
+function recordHardcoverSearchRequest(req) {
+  cleanupHardcoverSearchRateLimitState();
+  const key = getClientAddress(req).toLowerCase();
+  const now = Date.now();
+  const entry = hardcoverSearchRateLimitState.get(key);
+
+  if (!entry || now - entry.windowStartedAt > HARDCOVER_SEARCH_WINDOW_MS) {
+    hardcoverSearchRateLimitState.set(key, {
+      windowStartedAt: now,
+      count: 1,
+      blockedUntil: null
+    });
+    return;
+  }
+
+  entry.count += 1;
+  if (entry.count >= HARDCOVER_SEARCH_MAX_REQUESTS) {
+    entry.blockedUntil = now + HARDCOVER_SEARCH_BLOCK_MS;
+  }
+  hardcoverSearchRateLimitState.set(key, entry);
 }
 
 function normalizeOrigin(value) {
@@ -569,10 +657,9 @@ function getRequestOrigin(req) {
 }
 
 function getExpectedOrigin(req) {
-  const forwardedProto = sanitizeText(String(req.headers["x-forwarded-proto"] || ""), 40);
-  const proto = forwardedProto ? forwardedProto.split(",")[0].trim().toLowerCase() : req.secure ? "https" : "http";
-  const forwardedHost = sanitizeText(String(req.headers["x-forwarded-host"] || ""), 220);
-  const host = (forwardedHost ? forwardedHost.split(",")[0].trim() : sanitizeText(String(req.headers.host || ""), 220)).toLowerCase();
+  // Express derives req.protocol/req.secure from the configured trust-proxy setting.
+  const proto = sanitizeText(String(req.protocol || ""), 40).toLowerCase();
+  const host = sanitizeText(String(req.get("host") || req.headers.host || ""), 220).toLowerCase();
 
   if (!host) {
     return "";
@@ -631,9 +718,9 @@ function isValidEmergencyResetKey(candidate) {
   return crypto.timingSafeEqual(expected, actual);
 }
 
-function hashPassword(password) {
+async function hashPassword(password) {
   const salt = crypto.randomBytes(16);
-  const hash = crypto.scryptSync(password, salt, 64, { N: 16384, r: 8, p: 1 });
+  const hash = await scryptAsync(password, salt, 64, { N: 16384, r: 8, p: 1 });
   return `scrypt$${salt.toString("hex")}$${hash.toString("hex")}`;
 }
 
@@ -665,13 +752,13 @@ function parsePasswordHash(storedHash) {
   return null;
 }
 
-function verifyPassword(password, storedHash) {
+async function verifyPassword(password, storedHash) {
   const parsed = parsePasswordHash(storedHash);
   if (!parsed) {
     return { ok: false, legacy: false };
   }
 
-  const hash = crypto.scryptSync(password, Buffer.from(parsed.saltHex, "hex"), 64, { N: 16384, r: 8, p: 1 });
+  const hash = await scryptAsync(password, Buffer.from(parsed.saltHex, "hex"), 64, { N: 16384, r: 8, p: 1 });
   const expected = Buffer.from(parsed.hashHex, "hex");
 
   if (expected.length !== hash.length) {
@@ -695,16 +782,11 @@ function sanitizeUser(row) {
 }
 
 function buildSessionCookieOptions(req) {
-  const forwardedProto = sanitizeText(String(req.headers["x-forwarded-proto"] || ""), 40)
-    .split(",")[0]
-    .trim()
-    .toLowerCase();
-  const isSecure = req.secure || forwardedProto === "https";
-
   return {
     httpOnly: true,
     sameSite: "lax",
-    secure: isSecure,
+    // Let Express decide whether the request was secure based on trust proxy.
+    secure: Boolean(req.secure),
     maxAge: SESSION_TTL_SECONDS * 1000,
     path: "/"
   };
@@ -1025,15 +1107,13 @@ async function getSetting(key) {
   return row ? row.value : null;
 }
 
-async function setSetting(key, value) {
-  const db = await initDb();
-
-  if (!value) {
-    await db.run("DELETE FROM settings WHERE key = ?", [key]);
+function setSettingValue(db, key, value) {
+  if (value === null || value === undefined || value === "") {
+    db.run("DELETE FROM settings WHERE key = ?", [key]);
     return;
   }
 
-  await db.run(
+  db.run(
     `
       INSERT INTO settings (key, value)
       VALUES (?, ?)
@@ -1050,11 +1130,6 @@ async function getRegistrationSetting() {
   }
 
   return String(value).toLowerCase() === "true";
-}
-
-async function setRegistrationSetting(allowRegistration) {
-  const normalized = allowRegistration ? "true" : "false";
-  await setSetting(REGISTRATION_SETTING_KEY, normalized);
 }
 
 function buildTokenPreview(token) {
@@ -1142,7 +1217,7 @@ function parseAuditDetails(details) {
   }
 }
 
-async function writeAdminAuditLog(db, entry) {
+function writeAdminAuditLog(db, entry) {
   const actorUserId = Number(entry?.actorUserId);
   const action = sanitizeText(String(entry?.action || ""), 120);
   const targetType = sanitizeText(String(entry?.targetType || ""), 80) || null;
@@ -1165,7 +1240,7 @@ async function writeAdminAuditLog(db, entry) {
     }
   }
 
-  await db.run(
+  db.run(
     `
       INSERT INTO admin_audit_log (actor_user_id, action, target_type, target_id, details)
       VALUES (?, ?, ?, ?, ?)
@@ -1174,12 +1249,12 @@ async function writeAdminAuditLog(db, entry) {
   );
 }
 
-async function safeAdminAuditLog(db, entry) {
-  try {
-    await writeAdminAuditLog(db, entry);
-  } catch (error) {
-    console.error("[audit] failed to write admin log:", error);
-  }
+function runAdminActionWithAudit(db, auditEntry, actionFn) {
+  return db.transaction(() => {
+    const result = actionFn();
+    writeAdminAuditLog(db, auditEntry);
+    return result;
+  })();
 }
 
 async function runDatabaseBackup({ reason = "scheduled", actorUserId = null } = {}) {
@@ -1205,13 +1280,19 @@ async function runDatabaseBackup({ reason = "scheduled", actorUserId = null } = 
     const removed = await pruneOldBackups();
 
     if (actorUserId) {
-      await safeAdminAuditLog(db, {
-        actorUserId,
-        action: "admin.backup.run",
-        targetType: "backup",
-        targetId: path.basename(finalPath),
-        details: { reason, sizeBytes: stats.size, removedOldFiles: removed }
-      });
+      try {
+        writeAdminAuditLog(db, {
+          actorUserId,
+          action: "admin.backup.run",
+          targetType: "backup",
+          targetId: path.basename(finalPath),
+          details: { reason, sizeBytes: stats.size, removedOldFiles: removed }
+        });
+      } catch (error) {
+        await fs.promises.unlink(finalPath).catch(() => {});
+        console.error("[backup] audit log failed, removed new backup:", error);
+        return { ok: false, skipped: false, error: "Backup-Audit konnte nicht gespeichert werden." };
+      }
     }
 
     console.log(
@@ -1523,41 +1604,60 @@ async function requestHardcoverSearch(query, token) {
   };
 
   for (const candidate of tokenCandidates) {
-    const response = await fetch(HARDCOVER_ENDPOINT, {
-      method: "POST",
-      headers: {
-        "content-type": "application/json",
-        accept: "application/json",
-        authorization: candidate
-      },
-      body: JSON.stringify(requestBody)
-    });
+    const controller = new AbortController();
+    const timeoutHandle = setTimeout(() => controller.abort(), HARDCOVER_REQUEST_TIMEOUT_MS);
 
-    const rawText = await response.text();
-    let payload = null;
+    try {
+      const response = await fetch(HARDCOVER_ENDPOINT, {
+        method: "POST",
+        headers: {
+          "content-type": "application/json",
+          accept: "application/json",
+          authorization: candidate
+        },
+        signal: controller.signal,
+        body: JSON.stringify(requestBody)
+      });
 
-    if (rawText) {
-      try {
-        payload = JSON.parse(rawText);
-      } catch {
-        payload = { raw: rawText };
+      const rawText = await response.text();
+      let payload = null;
+
+      if (rawText) {
+        try {
+          payload = JSON.parse(rawText);
+        } catch {
+          payload = { raw: rawText };
+        }
       }
-    }
 
-    const hasGraphQlErrors = Array.isArray(payload?.errors) && payload.errors.length > 0;
-    if (response.ok && !hasGraphQlErrors) {
-      return {
-        ok: true,
+      const hasGraphQlErrors = Array.isArray(payload?.errors) && payload.errors.length > 0;
+      if (response.ok && !hasGraphQlErrors) {
+        return {
+          ok: true,
+          status: response.status,
+          payload
+        };
+      }
+
+      lastAttempt = {
+        ok: false,
         status: response.status,
         payload
       };
-    }
+    } catch (error) {
+      if (error?.name === "AbortError" || error?.code === "ABORT_ERR") {
+        lastAttempt = {
+          ok: false,
+          status: 504,
+          payload: { message: "Hardcover-Anfrage hat zu lange gedauert." }
+        };
+        continue;
+      }
 
-    lastAttempt = {
-      ok: false,
-      status: response.status,
-      payload
-    };
+      throw error;
+    } finally {
+      clearTimeout(timeoutHandle);
+    }
   }
 
   return lastAttempt;
@@ -1592,8 +1692,8 @@ app.post("/api/auth/login", async (req, res) => {
   const identifier = rawIdentifier.trim();
   const password = String(req.body?.password || "");
 
-  const rateLimitIdentifier = identifier || "unknown";
-  const limitStatus = getLoginRateLimitStatus(req, rateLimitIdentifier);
+  const rateLimitIdentifier = `login:${identifier || "unknown"}`;
+  const limitStatus = getAttemptRateLimitStatus(req, rateLimitIdentifier);
   if (limitStatus.blocked) {
     res.setHeader("Retry-After", String(limitStatus.retryAfterSeconds));
     return res.status(429).json({
@@ -1611,7 +1711,9 @@ app.post("/api/auth/login", async (req, res) => {
 
     if (identifier.includes("@")) {
       const email = sanitizeEmail(identifier);
-      user = await db.get("SELECT * FROM users WHERE email = ?", [email]);
+      user = await db.get("SELECT * FROM users WHERE email = ? COLLATE NOCASE ORDER BY id ASC LIMIT 1", [
+        email
+      ]);
     } else {
       const username = sanitizeUsername(identifier);
       if (!username) {
@@ -1620,15 +1722,15 @@ app.post("/api/auth/login", async (req, res) => {
       user = await db.get("SELECT * FROM users WHERE username = ? COLLATE NOCASE", [username]);
     }
 
-    const verification = user ? verifyPassword(password, user.password_hash) : { ok: false, legacy: false };
+    const verification = user ? await verifyPassword(password, user.password_hash) : { ok: false, legacy: false };
 
     if (!user || !verification.ok) {
-      recordLoginFailure(req, rateLimitIdentifier);
+      recordAttemptFailure(req, rateLimitIdentifier);
       return res.status(401).json({ error: "Login fehlgeschlagen." });
     }
 
     if (verification.legacy) {
-      const upgradedHash = hashPassword(password);
+      const upgradedHash = await hashPassword(password);
       await db.run("UPDATE users SET password_hash = ? WHERE id = ?", [upgradedHash, user.id]);
     }
 
@@ -1641,7 +1743,7 @@ app.post("/api/auth/login", async (req, res) => {
       [user.id, tokenHash, expiresAt]
     );
 
-    clearLoginFailures(req, rateLimitIdentifier);
+    clearAttemptFailures(req, rateLimitIdentifier);
     res.cookie(SESSION_COOKIE, token, buildSessionCookieOptions(req));
     return res.json({ user: sanitizeUser(user) });
   } catch (error) {
@@ -1662,8 +1764,8 @@ app.post("/api/auth/emergency-password-reset", async (req, res) => {
   const newPassword = String(req.body?.newPassword ?? req.body?.password ?? "");
   const resetKey = String(req.body?.resetKey || "").trim();
 
-  const rateLimitIdentifier = `emergency-reset:${identifier || "unknown"}`;
-  const limitStatus = getLoginRateLimitStatus(req, rateLimitIdentifier);
+  const rateLimitIdentifier = "emergency-reset";
+  const limitStatus = getAttemptRateLimitStatus(req, rateLimitIdentifier);
   if (limitStatus.blocked) {
     res.setHeader("Retry-After", String(limitStatus.retryAfterSeconds));
     return res.status(429).json({
@@ -1689,7 +1791,7 @@ app.post("/api/auth/emergency-password-reset", async (req, res) => {
   }
 
   if (!isValidEmergencyResetKey(resetKey)) {
-    recordLoginFailure(req, rateLimitIdentifier);
+    recordAttemptFailure(req, rateLimitIdentifier);
     return res.status(401).json({ error: "Reset-Key ungültig." });
   }
 
@@ -1699,7 +1801,10 @@ app.post("/api/auth/emergency-password-reset", async (req, res) => {
 
     if (identifier.includes("@")) {
       const email = sanitizeEmail(identifier);
-      user = await db.get("SELECT id, email, username, role FROM users WHERE email = ?", [email]);
+      user = await db.get(
+        "SELECT id, email, username, role FROM users WHERE email = ? COLLATE NOCASE ORDER BY id ASC LIMIT 1",
+        [email]
+      );
     } else {
       const username = sanitizeUsername(identifier);
       if (!username) {
@@ -1711,15 +1816,15 @@ app.post("/api/auth/emergency-password-reset", async (req, res) => {
     }
 
     if (!user || user.role !== "admin") {
-      recordLoginFailure(req, rateLimitIdentifier);
+      recordAttemptFailure(req, rateLimitIdentifier);
       return res.status(404).json({ error: "Admin-Konto nicht gefunden." });
     }
 
-    const passwordHash = hashPassword(newPassword);
+    const passwordHash = await hashPassword(newPassword);
     await db.run("UPDATE users SET password_hash = ? WHERE id = ?", [passwordHash, user.id]);
     await db.run("DELETE FROM sessions WHERE user_id = ?", [user.id]);
 
-    clearLoginFailures(req, rateLimitIdentifier);
+    clearAttemptFailures(req, rateLimitIdentifier);
     console.warn(
       `[security] emergency admin password reset executed for user_id=${user.id} email=${user.email}`
     );
@@ -1768,17 +1873,31 @@ app.post("/api/auth/register", async (req, res) => {
     return res.status(400).json({ error: usernameValidationError });
   }
 
+  const rateLimitIdentifier = "registration";
+  const limitStatus = getAttemptRateLimitStatus(req, rateLimitIdentifier);
+  if (limitStatus.blocked) {
+    res.setHeader("Retry-After", String(limitStatus.retryAfterSeconds));
+    return res.status(429).json({
+      error: `Zu viele Versuche. Bitte in ${limitStatus.retryAfterSeconds} Sekunden erneut versuchen.`
+    });
+  }
+
   try {
     const db = await initDb();
     const stats = await db.get("SELECT COUNT(*) AS count FROM users");
     const hasUsers = (stats?.count || 0) > 0;
     const allowRegistration = await getRegistrationSetting();
-    const existing = await db.get("SELECT id FROM users WHERE email = ?", [email]);
+    const existing = await db.get(
+      "SELECT id FROM users WHERE email = ? COLLATE NOCASE ORDER BY id ASC LIMIT 1",
+      [email]
+    );
     if (existing) {
+      recordAttemptFailure(req, rateLimitIdentifier);
       return res.status(409).json({ error: "Diese E-Mail ist bereits registriert." });
     }
     const usernameExists = await db.get("SELECT id FROM users WHERE username = ? COLLATE NOCASE", [username]);
     if (usernameExists) {
+      recordAttemptFailure(req, rateLimitIdentifier);
       return res.status(409).json({ error: "Benutzername ist bereits vergeben." });
     }
 
@@ -1795,35 +1914,58 @@ app.post("/api/auth/register", async (req, res) => {
         }
       } else {
         if (!allowRegistration) {
+          recordAttemptFailure(req, rateLimitIdentifier);
           return res.status(403).json({ error: "Registrierung ist deaktiviert." });
         }
         role = "user";
       }
     }
 
-    const passwordHash = hashPassword(password);
-    const result = await db.run(
-      "INSERT INTO users (email, username, password_hash, role) VALUES (?, ?, ?, ?)",
-      [email, username, passwordHash, role]
-    );
-
-    const created = await db.get("SELECT id, email, username, role FROM users WHERE id = ?", [result.lastID]);
+    const passwordHash = await hashPassword(password);
+    let result;
+    let created;
 
     if (creator && creator.role === "admin") {
-      await safeAdminAuditLog(db, {
+      const auditEntry = {
         actorUserId: creator.id,
         action: "admin.user.created",
         targetType: "user",
-        targetId: String(created.id),
+        targetId: "",
         details: {
-          email: created.email,
-          username: created.username,
-          role: created.role
+          email,
+          username,
+          role
         }
-      });
+      };
+      runAdminActionWithAudit(
+        db,
+        auditEntry,
+        () => {
+          result = db.run(
+            "INSERT INTO users (email, username, password_hash, role) VALUES (?, ?, ?, ?)",
+            [email, username, passwordHash, role]
+          );
+          created = db.get("SELECT id, email, username, role FROM users WHERE id = ?", [result.lastID]);
+          auditEntry.targetId = String(created.id);
+          auditEntry.details = {
+            email: created.email,
+            username: created.username,
+            role: created.role
+          };
+        }
+      );
+    } else {
+      result = await db.run(
+        "INSERT INTO users (email, username, password_hash, role) VALUES (?, ?, ?, ?)",
+        [email, username, passwordHash, role]
+      );
+      created = await db.get("SELECT id, email, username, role FROM users WHERE id = ?", [result.lastID]);
     }
 
     if (!hasUsers) {
+      if (!created) {
+        throw new Error("Registrierung fehlgeschlagen.");
+      }
       await db.run("UPDATE mangas SET user_id = ? WHERE user_id IS NULL", [created.id]);
 
       const token = crypto.randomBytes(32).toString("hex");
@@ -1838,10 +1980,12 @@ app.post("/api/auth/register", async (req, res) => {
       res.cookie(SESSION_COOKIE, token, buildSessionCookieOptions(req));
     }
 
+    clearAttemptFailures(req, rateLimitIdentifier);
     return res.status(201).json({ user: sanitizeUser(created) });
   } catch (error) {
     const dbMessage = String(error?.message || "");
     if (dbMessage.includes("UNIQUE")) {
+      recordAttemptFailure(req, "registration");
       if (dbMessage.includes("users.username") || dbMessage.includes("idx_users_username_nocase")) {
         return res.status(409).json({ error: "Benutzername ist bereits vergeben." });
       }
@@ -1867,18 +2011,23 @@ app.put("/api/settings/hardcover-token", requireAdmin, async (req, res) => {
   const token = sanitizeText(req.body?.token || "", 4000);
 
   try {
-    await setSetting(HARDCOVER_TOKEN_KEY, token || null);
     const db = await initDb();
-    await safeAdminAuditLog(db, {
-      actorUserId: req.user.id,
-      action: token ? "settings.hardcover_token.updated" : "settings.hardcover_token.cleared",
-      targetType: "settings",
-      targetId: HARDCOVER_TOKEN_KEY,
-      details: {
-        hasToken: Boolean(token),
-        tokenPreview: buildTokenPreview(token)
+    runAdminActionWithAudit(
+      db,
+      {
+        actorUserId: req.user.id,
+        action: token ? "settings.hardcover_token.updated" : "settings.hardcover_token.cleared",
+        targetType: "settings",
+        targetId: HARDCOVER_TOKEN_KEY,
+        details: {
+          hasToken: Boolean(token),
+          tokenPreview: buildTokenPreview(token)
+        }
+      },
+      () => {
+        setSettingValue(db, HARDCOVER_TOKEN_KEY, token || null);
       }
-    });
+    );
     return res.json({ hasToken: Boolean(token), tokenPreview: buildTokenPreview(token) });
   } catch (error) {
     console.error(error);
@@ -1931,15 +2080,20 @@ app.put("/api/admin/registration", requireAdmin, async (req, res) => {
     rawValue === "1";
 
   try {
-    await setRegistrationSetting(allowRegistration);
     const db = await initDb();
-    await safeAdminAuditLog(db, {
-      actorUserId: req.user.id,
-      action: "admin.registration.updated",
-      targetType: "settings",
-      targetId: REGISTRATION_SETTING_KEY,
-      details: { allowRegistration }
-    });
+    runAdminActionWithAudit(
+      db,
+      {
+        actorUserId: req.user.id,
+        action: "admin.registration.updated",
+        targetType: "settings",
+        targetId: REGISTRATION_SETTING_KEY,
+        details: { allowRegistration }
+      },
+      () => {
+        setSettingValue(db, REGISTRATION_SETTING_KEY, allowRegistration ? "true" : "false");
+      }
+    );
     return res.json({ allowRegistration });
   } catch (error) {
     console.error(error);
@@ -2052,14 +2206,22 @@ app.delete("/api/admin/users/:id/sessions", requireAdmin, async (req, res) => {
 
   try {
     const db = await initDb();
-    const result = await db.run("DELETE FROM sessions WHERE user_id = ?", [id]);
-    await safeAdminAuditLog(db, {
+    const auditEntry = {
       actorUserId: req.user.id,
       action: "admin.user.sessions_cleared",
       targetType: "user",
       targetId: String(id),
-      details: { clearedSessions: result.changes || 0 }
-    });
+      details: { clearedSessions: 0 }
+    };
+    const result = runAdminActionWithAudit(
+      db,
+      auditEntry,
+      () => {
+        const deleteResult = db.run("DELETE FROM sessions WHERE user_id = ?", [id]);
+        auditEntry.details.clearedSessions = deleteResult.changes || 0;
+        return deleteResult;
+      }
+    );
     return res.json({ cleared: result.changes || 0 });
   } catch (error) {
     console.error(error);
@@ -2097,19 +2259,24 @@ app.put("/api/admin/users/:id/role", requireAdmin, async (req, res) => {
       }
     }
 
-    await db.run("UPDATE users SET role = ? WHERE id = ?", [role, id]);
-    await safeAdminAuditLog(db, {
-      actorUserId: req.user.id,
-      action: "admin.user.role_changed",
-      targetType: "user",
-      targetId: String(id),
-      details: {
-        email: user.email,
-        oldRole: user.role,
-        newRole: role
+    const updated = runAdminActionWithAudit(
+      db,
+      {
+        actorUserId: req.user.id,
+        action: "admin.user.role_changed",
+        targetType: "user",
+        targetId: String(id),
+        details: {
+          email: user.email,
+          oldRole: user.role,
+          newRole: role
+        }
+      },
+      () => {
+        db.run("UPDATE users SET role = ? WHERE id = ?", [role, id]);
+        return db.get("SELECT id, email, role, created_at FROM users WHERE id = ?", [id]);
       }
-    });
-    const updated = await db.get("SELECT id, email, role, created_at FROM users WHERE id = ?", [id]);
+    );
     return res.json({ user: updated });
   } catch (error) {
     console.error(error);
@@ -2143,17 +2310,22 @@ app.put("/api/admin/users/:id/password", requireAdmin, async (req, res) => {
       return res.status(404).json({ error: "Nutzer nicht gefunden." });
     }
 
-    const passwordHash = hashPassword(password);
-    await db.run("UPDATE users SET password_hash = ? WHERE id = ?", [passwordHash, id]);
-    // Force re-login on all active devices after admin reset.
-    await db.run("DELETE FROM sessions WHERE user_id = ?", [id]);
-    await safeAdminAuditLog(db, {
-      actorUserId: req.user.id,
-      action: "admin.user.password_reset",
-      targetType: "user",
-      targetId: String(id),
-      details: { sessionsCleared: true }
-    });
+    const passwordHash = await hashPassword(password);
+    runAdminActionWithAudit(
+      db,
+      {
+        actorUserId: req.user.id,
+        action: "admin.user.password_reset",
+        targetType: "user",
+        targetId: String(id),
+        details: { sessionsCleared: true }
+      },
+      () => {
+        db.run("UPDATE users SET password_hash = ? WHERE id = ?", [passwordHash, id]);
+        // Force re-login on all active devices after admin reset.
+        db.run("DELETE FROM sessions WHERE user_id = ?", [id]);
+      }
+    );
 
     return res.json({ ok: true });
   } catch (error) {
@@ -2565,23 +2737,34 @@ app.get("/api/hardcover/search", requireAuth, async (req, res) => {
     return res.status(400).json({ error: "Bitte einen Suchbegriff angeben." });
   }
 
+  const searchLimitStatus = getHardcoverSearchRateLimitStatus(req);
+  if (searchLimitStatus.blocked) {
+    res.setHeader("Retry-After", String(searchLimitStatus.retryAfterSeconds));
+    return res.status(429).json({
+      error: `Zu viele Hardcover-Suchen. Bitte in ${searchLimitStatus.retryAfterSeconds} Sekunden erneut versuchen.`
+    });
+  }
+
   try {
     const token = await getSetting(HARDCOVER_TOKEN_KEY);
     if (!token) {
       return res.status(400).json({ error: "Kein Hardcover API Token in den Settings hinterlegt." });
     }
 
+    recordHardcoverSearchRequest(req);
     const attempt = await requestHardcoverSearch(query, token);
 
     if (!attempt.ok) {
       const details = attempt.payload || null;
       const detailMessage = parseApiErrorMessage(details);
-      const statusCode = attempt.status === 401 || attempt.status === 403 ? 401 : 502;
+      const statusCode = attempt.status === 401 || attempt.status === 403 ? 401 : attempt.status === 504 ? 504 : 502;
 
       return res.status(statusCode).json({
         error: detailMessage
           ? `Hardcover API Fehler: ${detailMessage}`
-          : `Hardcover API Fehler (HTTP ${attempt.status || "unbekannt"}).`,
+          : attempt.status === 504
+            ? "Hardcover-Anfrage hat zu lange gedauert."
+            : `Hardcover API Fehler (HTTP ${attempt.status || "unbekannt"}).`,
         details
       });
     }

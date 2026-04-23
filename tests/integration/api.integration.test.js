@@ -186,8 +186,19 @@ test(
     const admin = new ApiClient(baseUrl);
     const reader = new ApiClient(baseUrl);
     const readerAdmin = new ApiClient(baseUrl);
+    let response;
 
-    let response = await guest.request("GET", "/api/auth/me");
+    response = await guest.request("POST", "/api/auth/register", {
+      headers: { origin: "https://evil.example" },
+      json: {
+        email: "blocked-origin@example.com",
+        username: "blockedorigin",
+        password: "StrongPass123!"
+      }
+    });
+    assert.equal(response.status, 403);
+
+    response = await guest.request("GET", "/api/auth/me");
     assert.equal(response.status, 401);
 
     response = await guest.request("GET", "/api/auth/bootstrap");
@@ -247,6 +258,16 @@ test(
       }
     });
     assert.equal(response.status, 200);
+
+    response = await admin.request("POST", "/api/manga", {
+      headers: { origin: "https://evil.example" },
+      json: {
+        title: "Blocked by CSRF",
+        mediaType: "book",
+        status: "Abgeschlossen"
+      }
+    });
+    assert.equal(response.status, 403);
 
     response = await admin.request("POST", "/api/manga", {
       json: {
@@ -432,5 +453,9 @@ test(
     assert.equal(response.status, 200);
     assert.equal(Array.isArray(response.data.entries), true);
     assert.ok(response.data.entries.length > 0);
+    const auditActions = response.data.entries.map((entry) => entry.action);
+    assert.ok(auditActions.includes("admin.user.created"));
+    assert.ok(auditActions.includes("admin.registration.updated"));
+    assert.ok(auditActions.includes("admin.user.role_changed"));
   }
 );

@@ -138,17 +138,17 @@ function allocateUniqueUsername(base, usedKeys, maxLength = USERNAME_MAX_LENGTH)
   return candidate;
 }
 
-async function ensureColumn(table, name, definition) {
-  const columns = await db.all(`PRAGMA table_info(${table})`);
+function ensureColumn(table, name, definition) {
+  const columns = db.all(`PRAGMA table_info(${table})`);
   const exists = columns.some((column) => column.name === name);
 
   if (!exists) {
-    await db.exec(`ALTER TABLE ${table} ADD COLUMN ${definition}`);
+    db.exec(`ALTER TABLE ${table} ADD COLUMN ${definition}`);
   }
 }
 
-async function ensureMangaFts() {
-  await db.exec(`
+function ensureMangaFts() {
+  db.exec(`
     CREATE VIRTUAL TABLE IF NOT EXISTS ${MANGA_FTS_TABLE} USING fts5(
       manga_id UNINDEXED,
       user_id UNINDEXED,
@@ -165,7 +165,7 @@ async function ensureMangaFts() {
     );
   `);
 
-  await db.exec(`
+  db.exec(`
     CREATE TRIGGER IF NOT EXISTS mangas_fts_ai
     AFTER INSERT ON mangas
     BEGIN
@@ -200,7 +200,7 @@ async function ensureMangaFts() {
     END;
   `);
 
-  await db.exec(`
+  db.exec(`
     CREATE TRIGGER IF NOT EXISTS mangas_fts_ad
     AFTER DELETE ON mangas
     BEGIN
@@ -209,7 +209,7 @@ async function ensureMangaFts() {
     END;
   `);
 
-  await db.exec(`
+  db.exec(`
     CREATE TRIGGER IF NOT EXISTS mangas_fts_au
     AFTER UPDATE ON mangas
     BEGIN
@@ -248,10 +248,10 @@ async function ensureMangaFts() {
   `);
 
   // Keep FTS index synchronized on migrations without forcing full rebuild every startup.
-  await db.run(
+  db.run(
     `DELETE FROM ${MANGA_FTS_TABLE} WHERE rowid NOT IN (SELECT id FROM mangas)`
   );
-  await db.run(
+  db.run(
     `
       INSERT OR REPLACE INTO ${MANGA_FTS_TABLE} (
         rowid,
@@ -294,131 +294,208 @@ async function initDb() {
 
   db = createDb(DB_FILE);
 
-  await db.exec(`
-    PRAGMA foreign_keys = ON;
+  db.exec("PRAGMA foreign_keys = ON;");
 
-    CREATE TABLE IF NOT EXISTS mangas (
-      id INTEGER PRIMARY KEY AUTOINCREMENT,
-      title TEXT NOT NULL,
-      total_volumes INTEGER,
-      owned_volumes INTEGER NOT NULL DEFAULT 0,
-      status TEXT NOT NULL DEFAULT 'Sammle',
-      notes TEXT,
-      created_at TEXT NOT NULL DEFAULT CURRENT_TIMESTAMP,
-      updated_at TEXT NOT NULL DEFAULT CURRENT_TIMESTAMP,
-      CHECK (owned_volumes >= 0),
-      CHECK (total_volumes IS NULL OR total_volumes >= 0),
-      CHECK (status IN ('Geplant', 'Sammle', 'Pausiert', 'Abgeschlossen'))
+  const migrate = db.transaction(() => {
+    db.exec(`
+      CREATE TABLE IF NOT EXISTS mangas (
+        id INTEGER PRIMARY KEY AUTOINCREMENT,
+        title TEXT NOT NULL,
+        total_volumes INTEGER,
+        owned_volumes INTEGER NOT NULL DEFAULT 0,
+        status TEXT NOT NULL DEFAULT 'Sammle',
+        media_type TEXT NOT NULL DEFAULT 'manga',
+        notes TEXT,
+        created_at TEXT NOT NULL DEFAULT CURRENT_TIMESTAMP,
+        updated_at TEXT NOT NULL DEFAULT CURRENT_TIMESTAMP,
+        CHECK (owned_volumes >= 0),
+        CHECK (total_volumes IS NULL OR total_volumes >= 0),
+        CHECK (status IN ('Geplant', 'Sammle', 'Pausiert', 'Abgeschlossen')),
+        CHECK (media_type IN ('manga', 'book')),
+        CHECK (trim(title) <> '')
+      );
+
+      CREATE TABLE IF NOT EXISTS users (
+        id INTEGER PRIMARY KEY AUTOINCREMENT,
+        email TEXT NOT NULL COLLATE NOCASE UNIQUE,
+        username TEXT,
+        password_hash TEXT NOT NULL,
+        role TEXT NOT NULL DEFAULT 'user',
+        created_at TEXT NOT NULL DEFAULT CURRENT_TIMESTAMP,
+        CHECK (trim(email) <> ''),
+        CHECK (role IN ('user', 'admin'))
+      );
+
+      CREATE TABLE IF NOT EXISTS sessions (
+        id INTEGER PRIMARY KEY AUTOINCREMENT,
+        user_id INTEGER NOT NULL,
+        token_hash TEXT NOT NULL,
+        created_at TEXT NOT NULL DEFAULT CURRENT_TIMESTAMP,
+        expires_at INTEGER NOT NULL,
+        FOREIGN KEY(user_id) REFERENCES users(id) ON DELETE CASCADE
+      );
+
+      CREATE INDEX IF NOT EXISTS idx_sessions_token_hash ON sessions(token_hash);
+      CREATE INDEX IF NOT EXISTS idx_sessions_user_id ON sessions(user_id);
+      CREATE INDEX IF NOT EXISTS idx_sessions_user_created ON sessions(user_id, created_at DESC);
+
+      CREATE TABLE IF NOT EXISTS settings (
+        key TEXT PRIMARY KEY,
+        value TEXT
+      );
+
+      CREATE TABLE IF NOT EXISTS admin_audit_log (
+        id INTEGER PRIMARY KEY AUTOINCREMENT,
+        actor_user_id INTEGER NOT NULL,
+        action TEXT NOT NULL,
+        target_type TEXT,
+        target_id TEXT,
+        details TEXT,
+        created_at TEXT NOT NULL DEFAULT CURRENT_TIMESTAMP,
+        FOREIGN KEY(actor_user_id) REFERENCES users(id) ON DELETE CASCADE
+      );
+
+      CREATE INDEX IF NOT EXISTS idx_admin_audit_created ON admin_audit_log(created_at DESC, id DESC);
+      CREATE INDEX IF NOT EXISTS idx_admin_audit_actor ON admin_audit_log(actor_user_id, created_at DESC);
+
+      CREATE TRIGGER IF NOT EXISTS set_updated_at
+      AFTER UPDATE ON mangas
+      FOR EACH ROW
+      BEGIN
+        UPDATE mangas
+        SET updated_at = CURRENT_TIMESTAMP
+        WHERE id = OLD.id;
+      END;
+
+    `);
+
+    ensureColumn("mangas", "author_name", "author_name TEXT");
+    ensureColumn("mangas", "cover_url", "cover_url TEXT");
+    ensureColumn("mangas", "hardcover_book_id", "hardcover_book_id TEXT");
+    ensureColumn("mangas", "missing_volumes", "missing_volumes TEXT NOT NULL DEFAULT '[]'");
+    ensureColumn("mangas", "media_type", "media_type TEXT NOT NULL DEFAULT 'manga'");
+    ensureColumn("mangas", "genres", "genres TEXT NOT NULL DEFAULT '[]'");
+    ensureColumn("mangas", "moods", "moods TEXT NOT NULL DEFAULT '[]'");
+    ensureColumn("mangas", "content_warnings", "content_warnings TEXT NOT NULL DEFAULT '[]'");
+    ensureColumn("mangas", "rating", "rating REAL");
+    ensureColumn("mangas", "ratings_count", "ratings_count INTEGER");
+    ensureColumn("mangas", "pages", "pages INTEGER");
+    ensureColumn("mangas", "release_year", "release_year INTEGER");
+    ensureColumn("mangas", "user_rating", "user_rating INTEGER");
+    ensureColumn("mangas", "user_review", "user_review TEXT");
+    ensureColumn("mangas", "user_id", "user_id INTEGER");
+    ensureColumn("users", "username", "username TEXT");
+    // Keep overview and import duplicate checks fast on larger user libraries.
+    db.exec("CREATE INDEX IF NOT EXISTS idx_mangas_user_updated ON mangas(user_id, updated_at DESC, id DESC)");
+    db.exec("CREATE INDEX IF NOT EXISTS idx_mangas_user_media_title ON mangas(user_id, media_type, title)");
+
+    db.run("UPDATE mangas SET media_type = LOWER(TRIM(media_type)) WHERE media_type IS NOT NULL");
+    db.run(
+      "UPDATE mangas SET media_type = 'manga' WHERE media_type IS NULL OR TRIM(media_type) = '' OR media_type NOT IN ('manga', 'book')"
+    );
+    db.run("UPDATE mangas SET owned_volumes = 0 WHERE owned_volumes IS NULL OR owned_volumes < 0");
+    db.run("UPDATE mangas SET total_volumes = NULL WHERE total_volumes IS NOT NULL AND total_volumes < 0");
+    db.run(
+      "UPDATE mangas SET total_volumes = owned_volumes WHERE total_volumes IS NOT NULL AND total_volumes < owned_volumes AND media_type = 'manga'"
+    );
+    db.run(
+      "UPDATE mangas SET owned_volumes = 1, total_volumes = 1, missing_volumes = '[]' WHERE media_type = 'book'"
+    );
+    db.run(
+      "UPDATE mangas SET status = CASE LOWER(TRIM(status)) WHEN 'geplant' THEN 'Geplant' WHEN 'sammle' THEN 'Sammle' WHEN 'pausiert' THEN 'Pausiert' WHEN 'abgeschlossen' THEN 'Abgeschlossen' ELSE status END WHERE status IS NOT NULL"
+    );
+    db.run("UPDATE mangas SET status = 'Sammle' WHERE status IS NULL OR TRIM(status) = '' OR status NOT IN ('Geplant', 'Sammle', 'Pausiert', 'Abgeschlossen')");
+    db.run("UPDATE mangas SET genres = '[]' WHERE genres IS NULL OR TRIM(genres) = ''");
+    db.run("UPDATE mangas SET moods = '[]' WHERE moods IS NULL OR TRIM(moods) = ''");
+    db.run(
+      "UPDATE mangas SET content_warnings = '[]' WHERE content_warnings IS NULL OR TRIM(content_warnings) = ''"
     );
 
-    CREATE TABLE IF NOT EXISTS users (
-      id INTEGER PRIMARY KEY AUTOINCREMENT,
-      email TEXT NOT NULL UNIQUE,
-      username TEXT,
-      password_hash TEXT NOT NULL,
-      role TEXT NOT NULL DEFAULT 'user',
-      created_at TEXT NOT NULL DEFAULT CURRENT_TIMESTAMP
+    db.run(
+      "UPDATE mangas SET missing_volumes = '[]' WHERE missing_volumes IS NULL OR TRIM(missing_volumes) = ''"
     );
 
-    CREATE TABLE IF NOT EXISTS sessions (
-      id INTEGER PRIMARY KEY AUTOINCREMENT,
-      user_id INTEGER NOT NULL,
-      token_hash TEXT NOT NULL,
-      created_at TEXT NOT NULL DEFAULT CURRENT_TIMESTAMP,
-      expires_at INTEGER NOT NULL,
-      FOREIGN KEY(user_id) REFERENCES users(id) ON DELETE CASCADE
-    );
+    db.run("UPDATE users SET role = LOWER(TRIM(role)) WHERE role IS NOT NULL");
+    db.run("UPDATE users SET role = 'user' WHERE role IS NULL OR TRIM(role) = '' OR role NOT IN ('user', 'admin')");
+    const users = db.all("SELECT id, email, username FROM users ORDER BY id ASC");
+    const usedUsernames = new Set();
 
-    CREATE INDEX IF NOT EXISTS idx_sessions_token_hash ON sessions(token_hash);
-    CREATE INDEX IF NOT EXISTS idx_sessions_user_id ON sessions(user_id);
-    CREATE INDEX IF NOT EXISTS idx_sessions_user_created ON sessions(user_id, created_at DESC);
+    // Normalize and deduplicate existing usernames before creating UNIQUE index.
+    for (const user of users) {
+      const fromUsername = normalizeUsername(user.username);
+      const fromEmail = deriveUsernameFromEmail(user.email);
+      const base = fromUsername || fromEmail || `user${user.id}`;
+      const unique = allocateUniqueUsername(base, usedUsernames);
 
-    CREATE TABLE IF NOT EXISTS settings (
-      key TEXT PRIMARY KEY,
-      value TEXT
-    );
-
-    CREATE TABLE IF NOT EXISTS admin_audit_log (
-      id INTEGER PRIMARY KEY AUTOINCREMENT,
-      actor_user_id INTEGER NOT NULL,
-      action TEXT NOT NULL,
-      target_type TEXT,
-      target_id TEXT,
-      details TEXT,
-      created_at TEXT NOT NULL DEFAULT CURRENT_TIMESTAMP,
-      FOREIGN KEY(actor_user_id) REFERENCES users(id) ON DELETE CASCADE
-    );
-
-    CREATE INDEX IF NOT EXISTS idx_admin_audit_created ON admin_audit_log(created_at DESC, id DESC);
-    CREATE INDEX IF NOT EXISTS idx_admin_audit_actor ON admin_audit_log(actor_user_id, created_at DESC);
-
-    CREATE TRIGGER IF NOT EXISTS set_updated_at
-    AFTER UPDATE ON mangas
-    FOR EACH ROW
-    BEGIN
-      UPDATE mangas
-      SET updated_at = CURRENT_TIMESTAMP
-      WHERE id = OLD.id;
-    END;
-  `);
-
-  await ensureColumn("mangas", "author_name", "author_name TEXT");
-  await ensureColumn("mangas", "cover_url", "cover_url TEXT");
-  await ensureColumn("mangas", "hardcover_book_id", "hardcover_book_id TEXT");
-  await ensureColumn("mangas", "missing_volumes", "missing_volumes TEXT NOT NULL DEFAULT '[]'");
-  await ensureColumn("mangas", "media_type", "media_type TEXT NOT NULL DEFAULT 'manga'");
-  await ensureColumn("mangas", "genres", "genres TEXT NOT NULL DEFAULT '[]'");
-  await ensureColumn("mangas", "moods", "moods TEXT NOT NULL DEFAULT '[]'");
-  await ensureColumn("mangas", "content_warnings", "content_warnings TEXT NOT NULL DEFAULT '[]'");
-  await ensureColumn("mangas", "rating", "rating REAL");
-  await ensureColumn("mangas", "ratings_count", "ratings_count INTEGER");
-  await ensureColumn("mangas", "pages", "pages INTEGER");
-  await ensureColumn("mangas", "release_year", "release_year INTEGER");
-  await ensureColumn("mangas", "user_rating", "user_rating INTEGER");
-  await ensureColumn("mangas", "user_review", "user_review TEXT");
-  await ensureColumn("mangas", "user_id", "user_id INTEGER");
-  await ensureColumn("users", "username", "username TEXT");
-  // Keep overview and import duplicate checks fast on larger user libraries.
-  await db.exec("CREATE INDEX IF NOT EXISTS idx_mangas_user_updated ON mangas(user_id, updated_at DESC, id DESC)");
-  await db.exec("CREATE INDEX IF NOT EXISTS idx_mangas_user_media_title ON mangas(user_id, media_type, title)");
-
-  await db.run("UPDATE mangas SET media_type = LOWER(TRIM(media_type)) WHERE media_type IS NOT NULL");
-  await db.run(
-    "UPDATE mangas SET media_type = 'manga' WHERE media_type IS NULL OR TRIM(media_type) = '' OR media_type NOT IN ('manga', 'book')"
-  );
-  await db.run(
-    "UPDATE mangas SET owned_volumes = 1, total_volumes = 1, missing_volumes = '[]' WHERE media_type = 'book'"
-  );
-  await db.run("UPDATE mangas SET genres = '[]' WHERE genres IS NULL OR TRIM(genres) = ''");
-  await db.run("UPDATE mangas SET moods = '[]' WHERE moods IS NULL OR TRIM(moods) = ''");
-  await db.run(
-    "UPDATE mangas SET content_warnings = '[]' WHERE content_warnings IS NULL OR TRIM(content_warnings) = ''"
-  );
-
-  await db.run(
-    "UPDATE mangas SET missing_volumes = '[]' WHERE missing_volumes IS NULL OR TRIM(missing_volumes) = ''"
-  );
-
-  await db.run("UPDATE users SET email = LOWER(TRIM(email)) WHERE email IS NOT NULL");
-  const users = await db.all("SELECT id, email, username FROM users ORDER BY id ASC");
-  const usedUsernames = new Set();
-
-  // Normalize and deduplicate existing usernames before creating UNIQUE index.
-  for (const user of users) {
-    const fromUsername = normalizeUsername(user.username);
-    const fromEmail = deriveUsernameFromEmail(user.email);
-    const base = fromUsername || fromEmail || `user${user.id}`;
-    const unique = allocateUniqueUsername(base, usedUsernames);
-
-    if (user.username !== unique) {
-      await db.run("UPDATE users SET username = ? WHERE id = ?", [unique, user.id]);
+      if (user.username !== unique) {
+        db.run("UPDATE users SET username = ? WHERE id = ?", [unique, user.id]);
+      }
     }
-  }
 
-  await db.exec(
-    "CREATE UNIQUE INDEX IF NOT EXISTS idx_users_username_nocase ON users(username COLLATE NOCASE)"
-  );
-  await ensureMangaFts();
+    db.exec(
+      "CREATE UNIQUE INDEX IF NOT EXISTS idx_users_username_nocase ON users(username COLLATE NOCASE)"
+    );
+    db.exec(`
+      CREATE TRIGGER IF NOT EXISTS validate_mangas_before_insert
+      BEFORE INSERT ON mangas
+      FOR EACH ROW
+      WHEN COALESCE(TRIM(NEW.status), '') NOT IN ('Geplant', 'Sammle', 'Pausiert', 'Abgeschlossen')
+        OR LOWER(TRIM(COALESCE(NEW.media_type, ''))) NOT IN ('manga', 'book')
+        OR COALESCE(NEW.owned_volumes, -1) < 0
+        OR (NEW.total_volumes IS NOT NULL AND NEW.total_volumes < 0)
+        OR (
+          LOWER(TRIM(COALESCE(NEW.media_type, ''))) = 'book'
+          AND (COALESCE(NEW.owned_volumes, 0) <> 1 OR COALESCE(NEW.total_volumes, 0) <> 1)
+        )
+        OR (
+          LOWER(TRIM(COALESCE(NEW.media_type, ''))) = 'manga'
+          AND NEW.total_volumes IS NOT NULL
+          AND NEW.total_volumes < NEW.owned_volumes
+        )
+      BEGIN
+        SELECT RAISE(ABORT, 'invalid manga data');
+      END;
+
+      CREATE TRIGGER IF NOT EXISTS validate_mangas_before_update
+      BEFORE UPDATE OF title, total_volumes, owned_volumes, status, notes, author_name, cover_url, hardcover_book_id, missing_volumes, media_type, genres, moods, content_warnings, rating, ratings_count, pages, release_year, user_rating, user_review, user_id ON mangas
+      FOR EACH ROW
+      WHEN COALESCE(TRIM(NEW.status), '') NOT IN ('Geplant', 'Sammle', 'Pausiert', 'Abgeschlossen')
+        OR LOWER(TRIM(COALESCE(NEW.media_type, ''))) NOT IN ('manga', 'book')
+        OR COALESCE(NEW.owned_volumes, -1) < 0
+        OR (NEW.total_volumes IS NOT NULL AND NEW.total_volumes < 0)
+        OR (
+          LOWER(TRIM(COALESCE(NEW.media_type, ''))) = 'book'
+          AND (COALESCE(NEW.owned_volumes, 0) <> 1 OR COALESCE(NEW.total_volumes, 0) <> 1)
+        )
+        OR (
+          LOWER(TRIM(COALESCE(NEW.media_type, ''))) = 'manga'
+          AND NEW.total_volumes IS NOT NULL
+          AND NEW.total_volumes < NEW.owned_volumes
+        )
+      BEGIN
+        SELECT RAISE(ABORT, 'invalid manga data');
+      END;
+
+      CREATE TRIGGER IF NOT EXISTS validate_users_role_before_insert
+      BEFORE INSERT ON users
+      FOR EACH ROW
+      WHEN LOWER(TRIM(COALESCE(NEW.role, ''))) NOT IN ('user', 'admin')
+      BEGIN
+        SELECT RAISE(ABORT, 'invalid user role');
+      END;
+
+      CREATE TRIGGER IF NOT EXISTS validate_users_role_before_update
+      BEFORE UPDATE OF role ON users
+      FOR EACH ROW
+      WHEN LOWER(TRIM(COALESCE(NEW.role, ''))) NOT IN ('user', 'admin')
+      BEGIN
+        SELECT RAISE(ABORT, 'invalid user role');
+      END;
+    `);
+    ensureMangaFts();
+  });
+
+  migrate();
 
   return db;
 }

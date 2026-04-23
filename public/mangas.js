@@ -464,6 +464,7 @@ function render() {
   mangas.forEach((manga) => {
     const row = template.content.firstElementChild.cloneNode(true);
     const isBook = isBookEntry(manga);
+    const cells = row.querySelectorAll("td");
 
     const cover = row.querySelector(".cover");
     const title = row.querySelector(".item-title");
@@ -480,6 +481,20 @@ function render() {
     const deleteBtn = row.querySelector('[data-action="delete"]');
     const editLink = row.querySelector('[data-action="edit"]');
     const editorTarget = row.querySelector("[data-editor]");
+
+    [
+      t("th_cover"),
+      t("th_title"),
+      t("th_type"),
+      t("th_author"),
+      t("th_volumes"),
+      t("th_missing"),
+      t("th_actions")
+    ].forEach((label, index) => {
+      if (cells[index]) {
+        cells[index].dataset.label = label;
+      }
+    });
 
     title.textContent = manga.title;
     badge.textContent = manga.status;
