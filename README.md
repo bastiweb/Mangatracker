@@ -9,6 +9,7 @@ Web app to manage your manga series and books with an SQLite database, Hardcover
 - `/settings` Settings (profile, Hardcover token for admins, import/export)
 - `/admin` Admin user management (roles, registration toggle, password reset)
 - `/login` Login
+- `/forgot-password` Emergency admin password reset (when enabled)
 - `/register` Registration (first setup or admin-only)
 
 ## Features
@@ -29,6 +30,7 @@ Web app to manage your manga series and books with an SQLite database, Hardcover
 - Multi-user login (admin/user) with sessions
 - Usernames shown in the navigation and editable in Settings
 - Login via email or username
+- Optional emergency password reset for locked-out admin accounts (via secret env key)
 - Username rules: min. 3 chars, no `@`, allowed `a-z A-Z 0-9 . _ -` and spaces
 - Admin page with user management (roles, registration toggle, password reset, force logout)
 - CSRF protection for write API requests via strict same-origin checks
@@ -58,6 +60,28 @@ Searches are performed by manga/book title and return up to 5 matches to choose 
 - `BACKUP_INTERVAL_MINUTES` (default `1440`): backup interval in minutes
 - `BACKUP_RETENTION_DAYS` (default `14`): deletes older backups automatically
 - `BACKUP_DIR` (default `/backups` in docker-compose): backup target directory
+- `EMERGENCY_RESET_KEY` (optional): enables `/forgot-password` + `/api/auth/emergency-password-reset` for admin password recovery
+
+## Admin password recovery
+
+### Option A (web): emergency reset page
+
+If `EMERGENCY_RESET_KEY` is set, you can use:
+
+- `/forgot-password` UI
+- `POST /api/auth/emergency-password-reset`
+
+This only resets **admin** accounts and invalidates active sessions for that account.
+
+### Option B (offline): update/create admin via script
+
+If web reset is not available, use the local script:
+
+```bash
+docker compose exec manga-tracker node scripts/upsert-admin-user.js <email> <username> <password>
+```
+
+This works even when no admin can log in.
 
 ## Local requirements
 
@@ -189,6 +213,7 @@ The GitHub workflow runs before Docker publishing:
 - `GET /api/auth/bootstrap`
 - `GET /api/auth/me`
 - `POST /api/auth/login`
+- `POST /api/auth/emergency-password-reset`
 - `POST /api/auth/logout`
 - `POST /api/auth/register`
 - `GET /api/manga` (supports `q`, `sort`, `genre`, optional `page`, `pageSize`)

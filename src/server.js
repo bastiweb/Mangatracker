@@ -21,6 +21,7 @@ const LOGIN_BLOCK_MS = 15 * 60 * 1000;
 const LOGIN_MAX_ATTEMPTS = 15;
 const LOGIN_RATE_LIMIT_CLEANUP_MS = 5 * 60 * 1000;
 const LOGIN_RATE_LIMIT_MAX_ENTRIES = 10000;
+const EMERGENCY_RESET_KEY = String(process.env.EMERGENCY_RESET_KEY || "").trim();
 const TRUST_PROXY = String(process.env.TRUST_PROXY || "false").toLowerCase() === "true";
 const CSRF_TRUSTED_ORIGINS = String(process.env.CSRF_TRUSTED_ORIGINS || "")
   .split(",")
@@ -615,6 +616,19 @@ function requireSameOriginForWrites(req, res, next) {
 
 function hashToken(token) {
   return crypto.createHash("sha256").update(token).digest("hex");
+}
+
+function isValidEmergencyResetKey(candidate) {
+  if (!EMERGENCY_RESET_KEY) {
+    return false;
+  }
+
+  const expected = crypto.createHash("sha256").update(EMERGENCY_RESET_KEY).digest();
+  const actual = crypto
+    .createHash("sha256")
+    .update(String(candidate || "").trim())
+    .digest();
+  return crypto.timingSafeEqual(expected, actual);
 }
 
 function hashPassword(password) {
@@ -1558,7 +1572,11 @@ app.get("/api/auth/bootstrap", async (_req, res) => {
     const row = await db.get("SELECT COUNT(*) AS count FROM users");
     const hasUsers = (row?.count || 0) > 0;
     const allowRegistration = !hasUsers || (await getRegistrationSetting());
-    return res.json({ hasUsers, allowRegistration });
+    return res.json({
+      hasUsers,
+      allowRegistration,
+      emergencyResetEnabled: Boolean(EMERGENCY_RESET_KEY)
+    });
   } catch (error) {
     console.error(error);
     return res.status(500).json({ error: "Auth-Status konnte nicht geladen werden." });
@@ -1629,6 +1647,86 @@ app.post("/api/auth/login", async (req, res) => {
   } catch (error) {
     console.error(error);
     return res.status(500).json({ error: "Login fehlgeschlagen." });
+  }
+});
+
+app.post("/api/auth/emergency-password-reset", async (req, res) => {
+  if (!EMERGENCY_RESET_KEY) {
+    return res.status(503).json({
+      error: "Notfall-Reset ist nicht konfiguriert. Bitte EMERGENCY_RESET_KEY setzen."
+    });
+  }
+
+  const rawIdentifier = String(req.body?.identifier ?? req.body?.email ?? "");
+  const identifier = rawIdentifier.trim();
+  const newPassword = String(req.body?.newPassword ?? req.body?.password ?? "");
+  const resetKey = String(req.body?.resetKey || "").trim();
+
+  const rateLimitIdentifier = `emergency-reset:${identifier || "unknown"}`;
+  const limitStatus = getLoginRateLimitStatus(req, rateLimitIdentifier);
+  if (limitStatus.blocked) {
+    res.setHeader("Retry-After", String(limitStatus.retryAfterSeconds));
+    return res.status(429).json({
+      error: `Zu viele Versuche. Bitte in ${limitStatus.retryAfterSeconds} Sekunden erneut versuchen.`
+    });
+  }
+
+  if (!identifier || !newPassword || !resetKey) {
+    return res.status(400).json({
+      error: "Bitte E-Mail/Benutzernamen, neuen Passwortwert und Reset-Key angeben."
+    });
+  }
+
+  if (newPassword.length < PASSWORD_MIN_LENGTH) {
+    return res.status(400).json({
+      error: `Passwort muss mindestens ${PASSWORD_MIN_LENGTH} Zeichen haben.`
+    });
+  }
+  if (newPassword.length > PASSWORD_MAX_LENGTH) {
+    return res.status(400).json({
+      error: `Passwort darf maximal ${PASSWORD_MAX_LENGTH} Zeichen haben.`
+    });
+  }
+
+  if (!isValidEmergencyResetKey(resetKey)) {
+    recordLoginFailure(req, rateLimitIdentifier);
+    return res.status(401).json({ error: "Reset-Key ungültig." });
+  }
+
+  try {
+    const db = await initDb();
+    let user = null;
+
+    if (identifier.includes("@")) {
+      const email = sanitizeEmail(identifier);
+      user = await db.get("SELECT id, email, username, role FROM users WHERE email = ?", [email]);
+    } else {
+      const username = sanitizeUsername(identifier);
+      if (!username) {
+        return res.status(400).json({ error: "Bitte E-Mail oder Benutzernamen angeben." });
+      }
+      user = await db.get("SELECT id, email, username, role FROM users WHERE username = ? COLLATE NOCASE", [
+        username
+      ]);
+    }
+
+    if (!user || user.role !== "admin") {
+      recordLoginFailure(req, rateLimitIdentifier);
+      return res.status(404).json({ error: "Admin-Konto nicht gefunden." });
+    }
+
+    const passwordHash = hashPassword(newPassword);
+    await db.run("UPDATE users SET password_hash = ? WHERE id = ?", [passwordHash, user.id]);
+    await db.run("DELETE FROM sessions WHERE user_id = ?", [user.id]);
+
+    clearLoginFailures(req, rateLimitIdentifier);
+    console.warn(
+      `[security] emergency admin password reset executed for user_id=${user.id} email=${user.email}`
+    );
+    return res.json({ ok: true });
+  } catch (error) {
+    console.error(error);
+    return res.status(500).json({ error: "Notfall-Reset fehlgeschlagen." });
   }
 });
 
@@ -3072,6 +3170,10 @@ app.get("/admin", async (req, res) => {
 
 app.get("/login", (_req, res) => {
   res.sendFile(path.join(__dirname, "..", "public", "login.html"));
+});
+
+app.get("/forgot-password", (_req, res) => {
+  res.sendFile(path.join(__dirname, "..", "public", "forgot-password.html"));
 });
 
 app.get("/register", (_req, res) => {

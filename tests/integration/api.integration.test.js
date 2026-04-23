@@ -162,6 +162,7 @@ test(
         PORT: String(port),
         DB_FILE: dbFile,
         DB_ENCRYPTION_KEY: "integration-test-key-1234567890",
+        EMERGENCY_RESET_KEY: "integration-emergency-reset-key",
         BACKUP_ENABLED: "false"
       },
       stdio: ["ignore", "pipe", "pipe"]
@@ -193,6 +194,7 @@ test(
     assert.equal(response.status, 200);
     assert.equal(response.data.hasUsers, false);
     assert.equal(response.data.allowRegistration, true);
+    assert.equal(response.data.emergencyResetEnabled, true);
 
     response = await admin.request("POST", "/api/auth/register", {
       json: {
@@ -207,6 +209,44 @@ test(
     response = await admin.request("GET", "/api/auth/me");
     assert.equal(response.status, 200);
     assert.equal(response.data.user.username, "admin");
+
+    response = await guest.request("POST", "/api/auth/emergency-password-reset", {
+      json: {
+        identifier: "admin",
+        resetKey: "wrong-key",
+        newPassword: "NewAdminPass123!"
+      }
+    });
+    assert.equal(response.status, 401);
+
+    response = await guest.request("POST", "/api/auth/emergency-password-reset", {
+      json: {
+        identifier: "admin",
+        resetKey: "integration-emergency-reset-key",
+        newPassword: "NewAdminPass123!"
+      }
+    });
+    assert.equal(response.status, 200);
+    assert.equal(response.data.ok, true);
+
+    response = await admin.request("GET", "/api/auth/me");
+    assert.equal(response.status, 401);
+
+    response = await admin.request("POST", "/api/auth/login", {
+      json: {
+        identifier: "admin",
+        password: "StrongPass123!"
+      }
+    });
+    assert.equal(response.status, 401);
+
+    response = await admin.request("POST", "/api/auth/login", {
+      json: {
+        identifier: "admin",
+        password: "NewAdminPass123!"
+      }
+    });
+    assert.equal(response.status, 200);
 
     response = await admin.request("POST", "/api/manga", {
       json: {

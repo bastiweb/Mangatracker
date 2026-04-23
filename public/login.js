@@ -1,6 +1,7 @@
 const form = document.getElementById("login-form");
 const message = document.getElementById("message");
 const registerHint = document.getElementById("register-hint");
+const forgotHint = document.getElementById("forgot-hint");
 
 const t = (key, vars) => (window.MangaI18n && window.MangaI18n.t ? window.MangaI18n.t(key, vars) : key);
 
@@ -19,6 +20,9 @@ async function checkBootstrap() {
     const data = await response.json().catch(() => ({}));
     if (data.allowRegistration) {
       registerHint.hidden = false;
+    }
+    if (data.emergencyResetEnabled && forgotHint) {
+      forgotHint.hidden = false;
     }
   } catch {
     // ignore
